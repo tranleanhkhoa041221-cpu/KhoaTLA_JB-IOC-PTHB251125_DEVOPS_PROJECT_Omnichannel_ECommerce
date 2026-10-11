@@ -38,6 +38,7 @@ dependencies {
     // --- Flyway: quan ly migration script cho bang payments/payment_transaction_logs/outbox_events
     // (dung ddl-auto=validate, KHONG de Hibernate tu sinh schema o mot service xu ly tien).
     implementation 'org.springframework.boot:spring-boot-starter-flyway'
+	runtimeOnly 'org.flywaydb:flyway-database-postgresql'
 
     // --- Kafka: nhan OrderCreatedEvent/OrderCancelledEvent, phat PaymentResultEvent (Outbox Pattern)
     implementation 'org.springframework.boot:spring-boot-starter-kafka'

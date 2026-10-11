@@ -33,6 +33,7 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     runtimeOnly 'org.postgresql:postgresql'
     implementation 'org.springframework.boot:spring-boot-starter-flyway'
+	runtimeOnly 'org.flywaydb:flyway-database-postgresql'
 
     // Kafka: consume order.created, order.cancelled, payment.completed, payment.failed
     implementation 'org.springframework.boot:spring-boot-starter-kafka'
