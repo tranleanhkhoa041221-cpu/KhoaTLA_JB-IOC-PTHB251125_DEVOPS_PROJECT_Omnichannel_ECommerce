@@ -5,6 +5,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.cloud.gateway.filter.ratelimit.KeyResolver;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.web.server.ServerWebExchange;
@@ -26,7 +27,10 @@ public class RateLimiterConfig {
     private final JwtTokenValidator jwtTokenValidator;
 
     /** Dung cho cac route nhay cam (login/register) - LUON key theo IP, bat ke co token hay khong. */
+    // @Primary: RequestRateLimiterGatewayFilterFactory inject 1 KeyResolver mac dinh; co 2 bean thi khoi dong that bai
+    // ("expected single matching bean but found 2"). Cac route van chi dinh key-resolver rieng trong application.yml.
     @Bean
+    @Primary
     public KeyResolver clientIpKeyResolver() {
         return exchange -> Mono.just("ip:" + resolveClientIp(exchange.getRequest()));
     }
