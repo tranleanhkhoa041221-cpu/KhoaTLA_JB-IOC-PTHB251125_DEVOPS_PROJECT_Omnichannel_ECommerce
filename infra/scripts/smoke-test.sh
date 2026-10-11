@@ -20,14 +20,14 @@ SKU="SMK-$R"
 j -X POST $B/api/catalog/products -H "Authorization: Bearer $AT" -d "{\"name\":\"Smoke $R\",\"description\":\"smoke\",\"basePrice\":100000,\"categoryId\":$CA,\"brandId\":$BR,\"status\":\"ACTIVE\",\"variants\":[{\"sku\":\"$SKU\",\"price\":100000,\"stockQuantity\":5,\"attributes\":\"{}\"}]}" | jq -r .data.id | { read x; chk productId "$x"; }
 j -X POST $B/api/inventory -H "Authorization: Bearer $AT" -d "{\"sku\":\"$SKU\",\"productName\":\"Smoke $R\",\"quantity\":5}" | jq -r .data.availableQty | { read x; chk "ton kho" "$x"; }
 order(){ j -X POST $B/api/orders -H "Authorization: Bearer $CT" -d "{\"idempotencyKey\":\"$(cat /proc/sys/kernel/random/uuid)\",\"customerId\":$CID,\"items\":[{\"sku\":\"$SKU\",\"quantity\":1}]}"; }
-step "Dat hang #1"; O=$(order); OID=$(echo "$O"|jq -r .data.id); chk "orderId (khong null)" "$OID"; echo "  status=$(echo "$O"|jq -r .data.status)"
+step "Dat hang #1"; O=$(order); echo "  response: $O"; OID=$(echo "$O"|jq -r .data.id); chk "orderId (khong null)" "$OID"; echo "  status=$(echo "$O"|jq -r .data.status)"
 step "Cho Outbox -> Kafka -> Payment (toi da 60s)"
 for i in $(seq 1 20); do P=$(j $B/api/payments/order/$OID -H "Authorization: Bearer $CT" | jq -r .data.status); [ "$P" != null ] && [ -n "$P" ] && break; sleep 3; done; chk "payment status (Kafka order.created OK)" "$P"
 step "Notification da ghi log cho don hang"
 for i in $(seq 1 20); do N=$(j "$B/api/notifications/logs?orderId=$OID&page=0&size=5" -H "Authorization: Bearer $AT" | jq -r '.data.totalElements // .data.content|length'); [ "${N:-0}" != 0 ] && [ "$N" != null ] && break; sleep 3; done; chk "so notification log" "$N"
 step "Kich ban de bai: TAT notification-service -> van dat duoc hang"
 ( cd /opt/quickbite 2>/dev/null && docker compose stop notification-service ) || echo "  (chay tren VPS de tu tat; neu khong hay tu tat roi chay tiep)"
-O2=$(order); chk "dat hang khi Notification tat" "$(echo "$O2"|jq -r .data.id)"
+O2=$(order); echo "  response: $O2"; chk "dat hang khi Notification tat" "$(echo "$O2"|jq -r .data.id)"
 ( cd /opt/quickbite 2>/dev/null && docker compose start notification-service )
 step "Ton kho: available + reserved phai = 5 - don da dat"; j $B/api/inventory/$SKU -H "Authorization: Bearer $AT" | jq -c '.data|{availableQty,reservedQty}'
 echo; echo "=> SMOKE TEST XONG"
