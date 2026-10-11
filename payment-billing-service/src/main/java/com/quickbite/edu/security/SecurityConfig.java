@@ -15,7 +15,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
  * - /api/payments/vnpay/**  : PUBLIC TUYET DOI - VNPay goi webhook server-to-server, KHONG co
  *   va KHONG THE co Bearer token cua user. Chong gia mao duoc bao dam rieng boi
  *   vnp_SecureHash (HMAC-SHA512) trong VnPayCallbackController/VnPayService, KHONG phai JWT.
- * - /api/payments/**/refund : chi ADMIN (hoan tien la nghiep vu ke toan/CSKH, khong danh cho khach).
+ * - /api/payments/{id}/refund : chi ADMIN (hoan tien la nghiep vu ke toan/CSKH, khong danh cho khach).
  * - Con lai                 : bat buoc dang nhap, ownership (chi xem giao dich CUA CHINH MINH)
  *   duoc kiem tra THEM o PaymentController.
  */
