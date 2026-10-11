@@ -22,7 +22,7 @@ j -X POST $B/api/inventory -H "Authorization: Bearer $AT" -d "{\"sku\":\"$SKU\",
 order(){ j -X POST $B/api/orders -H "Authorization: Bearer $CT" -d "{\"idempotencyKey\":\"$(cat /proc/sys/kernel/random/uuid)\",\"customerId\":$CID,\"items\":[{\"sku\":\"$SKU\",\"quantity\":1}]}"; }
 step "Dat hang #1"; O=$(order); echo "  response: $O"; OID=$(echo "$O"|jq -r .data.id); chk "orderId (khong null)" "$OID"; echo "  status=$(echo "$O"|jq -r .data.status)"
 step "Cho Outbox -> Kafka -> Payment (toi da 60s)"
-for i in $(seq 1 20); do P=$(j $B/api/payments/order/$OID -H "Authorization: Bearer $CT" | jq -r .data.status); [ "$P" != null ] && [ -n "$P" ] && break; sleep 3; done; chk "payment status (Kafka order.created OK)" "$P"
+for i in $(seq 1 20); do PR=$(j $B/api/payments/order/$OID -H "Authorization: Bearer $CT"); P=$(echo "$PR" | jq -r .data.status); [ "$P" != null ] && [ -n "$P" ] && break; sleep 3; done; echo "  response cuoi: $PR"; chk "payment status (Kafka order.created OK)" "$P"
 step "Notification da ghi log cho don hang"
 for i in $(seq 1 20); do N=$(j "$B/api/notifications/logs?orderId=$OID&page=0&size=5" -H "Authorization: Bearer $AT" | jq -r '.data.totalElements // .data.content|length'); [ "${N:-0}" != 0 ] && [ "$N" != null ] && break; sleep 3; done; chk "so notification log" "$N"
 step "Kich ban de bai: TAT notification-service -> van dat duoc hang"

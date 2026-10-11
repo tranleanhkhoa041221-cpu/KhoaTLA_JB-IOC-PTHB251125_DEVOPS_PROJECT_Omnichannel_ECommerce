@@ -40,11 +40,9 @@ public class PaymentTransactionLog {
     @Column(nullable = false, length = 30)
     private TransactionLogType type;
 
-    @Lob
     @Column(name = "request_params", columnDefinition = "TEXT")
     private String requestParams;
 
-    @Lob
     @Column(name = "response_params", columnDefinition = "TEXT")
     private String responseParams;
 
