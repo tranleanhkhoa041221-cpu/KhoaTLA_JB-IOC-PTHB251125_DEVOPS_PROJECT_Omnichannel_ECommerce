@@ -103,6 +103,9 @@ services:
       KAFKA_LOG_RETENTION_HOURS: 24
       KAFKA_LOG_RETENTION_BYTES: 268435456
       KAFKA_LOG_SEGMENT_BYTES: 67108864
+      # BAT BUOC tren VPS nho: mac dinh log cleaner xin bo dem dedupe 128MB tren heap -> OutOfMemoryError luc khoi dong
+      # (SkimpyOffsetMap) khi heap chi 160-256MB => Kafka restart vo han. 8MB du cho demo (cleaner chi nen __consumer_offsets).
+      KAFKA_LOG_CLEANER_DEDUPE_BUFFER_SIZE: 8388608
       KAFKA_HEAP_OPTS: ${KAFKA_HEAP:--Xms128m -Xmx160m}
     volumes:
       - kafka-data:/var/lib/kafka/data
