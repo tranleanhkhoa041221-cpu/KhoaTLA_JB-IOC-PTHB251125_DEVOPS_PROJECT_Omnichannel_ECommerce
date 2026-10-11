@@ -38,7 +38,8 @@ systemctl restart docker; systemctl enable docker
 
 echo "== 3. Firewall: chi 22/80/443 =="
 ufw default deny incoming; ufw default allow outgoing
-ufw limit 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp
+# 22: ALLOW (khong dung 'limit'): GitHub Actions mo nhieu ket noi SSH lien tiep tu IP thay doi -> 'ufw limit' (>=6 ket noi/30s) co the chan => i/o timeout
+ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp
 ufw --force enable
 # Cac port DB/Kafka/Redis KHONG duoc publish trong compose; Gateway bind 127.0.0.1 nen Docker khong bypass UFW.
 

@@ -103,6 +103,8 @@ jobs:
           source: "docker-compose.production.yml,infra,monitoring,profiles"
           target: /opt/quickbite
           overwrite: true
+          timeout: 120s            # cho SSH ket noi cham (VPS tai cao/swap)
+          command_timeout: 10m
 
       - name: Pull + up + verify (rollback nếu hỏng)
         uses: appleboy/ssh-action@v1.0.3
@@ -116,6 +118,7 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           envs: GHCR_USER,GHCR_TOKEN,NEW_TAG,NEW_PREFIX
+          timeout: 120s
           command_timeout: 30m
           script_stop: true
           script: |

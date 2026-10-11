@@ -14,7 +14,7 @@ Lưu ý: Docker tự chèn rule iptables và **bỏ qua UFW** nếu publish `0.0
 
 ## A. Chạy TRÊN VPS (ssh root@IP)
 ```bash
-ufw status verbose                      # Status: active; 22 LIMIT, 80 ALLOW, 443 ALLOW; Default: deny (incoming)
+ufw status verbose                      # Status: active; 22 ALLOW, 80 ALLOW, 443 ALLOW; Default: deny (incoming)
 ss -tlnp                                # chỉ thấy :22, :80, :443 (0.0.0.0/[::]) và 127.0.0.1:8080 (docker-proxy)
 docker ps --format 'table {{.Names}}\t{{.Ports}}'   # chỉ api-gateway có 127.0.0.1:8080->8080; còn lại KHÔNG có "0.0.0.0:"
 ss -tlnH | awk '{print $4}' | grep -E ':(5432|6379|9092|9093|8082|8083|8084|8085|8086|9090|9091|3000|16686)$' | grep -v '^127\.' \
@@ -35,6 +35,6 @@ curl.exe -sI http://khoatla-ecommerce.duckdns.org | findstr /i "HTTP Location"  
 ## C. Nếu sai
 | Triệu chứng | Sửa |
 |---|---|
-| UFW `inactive` | `ufw default deny incoming; ufw default allow outgoing; ufw limit 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw --force enable` |
+| UFW `inactive` | `ufw default deny incoming; ufw default allow outgoing; ufw allow 22/tcp; ufw allow 80/tcp; ufw allow 443/tcp; ufw --force enable` |
 | Có `0.0.0.0:xxxx->` trong `docker ps` | Xóa dòng `ports:` đó khỏi compose (hoặc đổi `127.0.0.1:xxxx:xxxx`) rồi `docker compose -f docker-compose.production.yml up -d` |
 | `/actuator/health` công khai trả 200 | Nginx chưa nạp template: `nginx -t && systemctl reload nginx`; kiểm tra `/etc/nginx/sites-enabled/quickbite` có khối `location ~ ^/(actuator|docs|...)` |

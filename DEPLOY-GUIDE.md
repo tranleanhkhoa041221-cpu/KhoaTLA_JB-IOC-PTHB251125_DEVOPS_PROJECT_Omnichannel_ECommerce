@@ -55,7 +55,7 @@ chmod 600 /etc/quickbite/duckdns.env
 Kiểm tra:
 ```bash
 free -m; swapon --show              # thay /swapfile 3G + zram
-ufw status verbose                   # chi 22 (LIMIT), 80, 443 ALLOW
+ufw status verbose                   # chi 22, 80, 443 ALLOW
 nginx -t && systemctl status nginx --no-pager | head -5
 curl -I https://khoatla-ecommerce.duckdns.org     # 502 la BINH THUONG luc nay (chua co gateway) - mien co HTTPS hop le
 ```
@@ -178,3 +178,13 @@ Làm theo `docs/08-v20-4gb-monitoring-loadtest.md` (Phần A: monitoring 3 bậc
 | Hết dung lượng | `docker system prune -af` (cẩn thận), `df -h /` |
 Tắt/bật Notification để demo: `docker compose stop notification-service` → đặt hàng vẫn 201 → `docker compose start notification-service`.
 Backup: cron 02:30 → `/opt/quickbite/backups` (giữ 7 ngày). Khôi phục: `docker exec -i postgres pg_restore -U postgres -d <db> --clean < file.dump`.
+
+---
+## Sự cố: GitHub Actions "Deploy to VPS" báo `dial tcp ***:22: i/o timeout`
+Nghĩa là runner của GitHub **không kết nối được SSH (cổng 22) tới VPS**. Làm lần lượt:
+1. **[PC]** `Test-NetConnection 103.74.101.153 -Port 22` → phải `TcpTestSucceeded : True`. `False` ⇒ VPS đang Offline (portal AZVPS bấm Bật), hoặc firewall của nhà cung cấp chặn 22 (kiểm tra mục Firewall/Security Group trên portal AZVPS, mở 22/80/443).
+2. **[WEB]** Secret `VPS_HOST` phải đúng `103.74.101.153` (không dấu cách/xuống dòng, không có `root@`, không có `http://`). `VPS_USER` = `root`.
+3. **[VPS]** (vào bằng console của portal nếu SSH không được) `ufw status verbose`: dòng 22 phải **ALLOW**, không phải LIMIT. Sửa: `ufw delete limit 22/tcp; ufw allow 22/tcp; ufw reload`. (`ufw limit` chặn IP mở ≥ 6 kết nối trong 30 giây; Actions mở nhiều kết nối liên tiếp.)
+4. **[VPS]** `systemctl status ssh --no-pager | head -5` (sshd phải chạy), `ss -tlnp | grep :22`.
+5. **[VPS]** `free -m; uptime` — nếu VPS đang quá tải/swap kịch liệt, sshd trả lời chậm → timeout. Chờ vài phút rồi bấm **Re-run failed jobs** (không cần build lại 6 image).
+6. Sau khi sửa, vào Actions → run lỗi → **Re-run failed jobs**.
