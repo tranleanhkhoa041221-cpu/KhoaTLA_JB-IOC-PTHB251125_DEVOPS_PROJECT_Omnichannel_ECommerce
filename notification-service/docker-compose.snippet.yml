@@ -1,0 +1,79 @@
+# ============================================================================
+# FRAGMENT docker-compose cho Notification Service - COPY 2 service ben duoi
+# (notification-postgres + notification-service) vao file docker-compose.yml
+# CHUNG cua toan bo he thong (cung level voi order-inventory-service,
+# payment-billing-service, identity-user-service, eureka-server, kafka...).
+#
+# LUU Y VE PORT 5433: identity-user-service va payment-billing-service trong
+# du an nay CUNG dang tro toi "localhost:5433" trong application.yml cua ho.
+# Do la vi ca 3 service (identity/payment/notification) duoc thiet ke de
+# DUNG CHUNG 1 Postgres SERVER VAT LY (1 container postgres) nhung MOI SERVICE
+# co 1 DATABASE RIENG BEN TRONG server do (identity_user_db, payment_billing_db,
+# notification_db) - dung Database-per-Service Pattern o muc logic/schema, khong
+# nhat thiet phai la 1 container rieng cho tung service (ton tai nguyen VPS demo).
+#
+# => Neu ban DA co san 1 service "postgres" dung chung trong docker-compose.yml
+#    chinh, KHONG copy khoi "notification-postgres" ben duoi nua - chi can them
+#    "notification_db" vao script khoi tao multi-database cua container postgres
+#    do (vd bang file init .sql mount vao /docker-entrypoint-initdb.d/).
+# ============================================================================
+
+services:
+  notification-postgres:
+    image: postgres:16-alpine
+    container_name: notification-postgres
+    environment:
+      POSTGRES_DB: notification_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${DB_PASSWORD}"
+    ports:
+      - "5433:5432"
+    volumes:
+      - notification-postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d notification_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    container_name: notification-service
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://notification-postgres:5432/notification_db
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      IDENTITY_GRPC_HOST: identity-user-service
+      IDENTITY_GRPC_PORT: "9090"
+      # Khong hardcode secret that trong file nay - truyen qua bien moi truong that
+      # luc "docker compose up" (vd tu file .env KHONG commit len git) hoac qua
+      # GitHub Actions Secrets khi deploy CI/CD len VPS (muc 4 de bai).
+      MAIL_USERNAME: ${MAIL_USERNAME}
+      MAIL_PASSWORD: ${MAIL_PASSWORD}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER}
+      NOTIFICATION_MAIL_ENABLED: "true"
+      NOTIFICATION_SMS_ENABLED: "true"
+    depends_on:
+      notification-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      identity-user-service:
+        condition: service_started
+    networks:
+      - backend-network
+
+volumes:
+  notification-postgres-data:
+
+networks:
+  backend-network:
+    external: true

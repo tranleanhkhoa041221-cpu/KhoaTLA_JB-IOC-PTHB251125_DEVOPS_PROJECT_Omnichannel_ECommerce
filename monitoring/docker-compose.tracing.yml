@@ -1,0 +1,24 @@
+# OpenTelemetry tracing bằng Java agent (KHÔNG sửa code/build.gradle; agent tự bắt Spring MVC, gRPC, Kafka, JDBC).
+# Yêu cầu: bật stack FULL (có jaeger) và VPS >= 4GB (mỗi JVM +~60-100MB). CHƯA ĐƯỢC KIỂM CHỨNG TRÊN VPS.
+# 1) bash infra/scripts/get-otel-agent.sh      (tải agent về /opt/quickbite/otel)
+# 2) docker compose -f docker-compose.production.yml -f monitoring/docker-compose.monitoring.yml -f monitoring/docker-compose.tracing.yml --profile full up -d
+# 3) Xem trace: ssh -L 16686:127.0.0.1:16686 root@VPS  -> http://localhost:16686 (chọn service, Find Traces)
+x-otel: &otel
+  mem_limit: ${MEM_SVC_TRACING:-320m}
+  volumes: [ "./otel:/otel:ro" ]
+  environment: &otel-env
+    JAVA_TOOL_OPTIONS: "-javaagent:/otel/opentelemetry-javaagent.jar"
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
+    OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+    OTEL_TRACES_EXPORTER: "otlp"
+    OTEL_METRICS_EXPORTER: "none"
+    OTEL_LOGS_EXPORTER: "none"
+    OTEL_TRACES_SAMPLER: "parentbased_traceidratio"
+    OTEL_TRACES_SAMPLER_ARG: "${OTEL_SAMPLE_RATIO:-0.2}"
+services:
+  api-gateway:             { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: api-gateway } }
+  identity-user-service:   { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: identity-user-service } }
+  product-catalog-service: { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: product-catalog-service } }
+  order-inventory-service: { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: order-inventory-service } }
+  payment-billing-service: { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: payment-billing-service } }
+  notification-service:    { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: notification-service } }

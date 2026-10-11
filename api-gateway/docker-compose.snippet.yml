@@ -1,0 +1,48 @@
+# ============================================================================
+# FRAGMENT docker-compose cho API Gateway - copy vao docker-compose.yml CHUNG
+# cua toan he thong, cung level voi cac service khac.
+#
+# API Gateway la Single Point of Entry DUY NHAT nen can duoc expose port ra
+# ngoai (vd qua Nginx reverse proxy + SSL theo muc 4 de bai); cac service con
+# lai (identity/order/payment/notification/product-catalog) KHONG can map
+# port ra host nua trong moi truong production thuc te (chi can noi bo trong
+# backend-network, Gateway dung Docker DNS de goi truc tiep theo service name)
+# - giam attack surface dung tinh than "dong UFW moi port DB/service noi bo".
+# ============================================================================
+
+services:
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: api-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Docker DNS: Gateway dung ten service Docker Compose de route (khong can Eureka).
+      # Default value da la Docker service name - khong can override khi dung Docker Compose.
+      IDENTITY_HOST: identity-user-service
+      IDENTITY_PORT: "8082"
+      PRODUCT_HOST: product-catalog-service
+      PRODUCT_PORT: "8083"
+      ORDER_HOST: order-inventory-service
+      ORDER_PORT: "8084"
+      PAYMENT_HOST: payment-billing-service
+      PAYMENT_PORT: "8085"
+      NOTIFICATION_HOST: notification-service
+      NOTIFICATION_PORT: "8086"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
+      SERVER_PORT: 8080
+    depends_on:
+      redis:
+        condition: service_started
+    networks:
+      - backend-network
+
+networks:
+  backend-network:
+    external: true

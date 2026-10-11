@@ -1,0 +1,37 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:order_inventory_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    # Test dung Hibernate tu sinh schema truc tiep tu Entity (create-drop) THAY VI chay Flyway
+    # migration V1 (viet thuan cu phap PostgreSQL) tren H2 - tranh rui ro incompatibility va
+    # tranh phai co Postgres THAT dang chay tren localhost chi de context load pass.
+    # Flyway van la nguon schema DUY NHAT khi chay that voi PostgreSQL (production/dev).
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    open-in-view: false
+  flyway:
+    enabled: false
+  data:
+    redis:
+      # Giu nguyen host/port cua main profile: RedisConnectionFactory chi mo ket noi THAT (lazy)
+      # khi co lenh Redis dau tien duoc goi, KHONG chan context load neu khong co Redis chay san.
+      # Cac unit/slice test dung @MockBean/@DataJpaTest cho RedisLockService se khong cham vao day.
+      host: localhost
+      port: 6379
+      timeout: 3000ms
+  kafka:
+    # Tuong tu Redis: KafkaConsumer/KafkaProducer bean duoc tao nhung chi thuc su connect/retry
+    # ngam (background thread) khi co message that, KHONG chan context load neu khong co broker.
+    bootstrap-servers: ${spring.embedded.kafka.brokers:localhost:9092}
+
+jwt:
+  secret-key: test-secret-key-for-context-load-only-1234567890
+
+app:
+  saga:
+    stale-order-threshold-minutes: 30
+    compensation-cron: "0 */5 * * * *"

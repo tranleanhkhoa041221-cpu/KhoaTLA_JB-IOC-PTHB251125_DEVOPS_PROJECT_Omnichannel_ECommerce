@@ -1,0 +1,28 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:notification_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    # Test dung Hibernate tu sinh schema truc tiep tu Entity (create-drop) THAY VI chay
+    # Flyway migration V1 (viet thuan cu phap PostgreSQL: BIGSERIAL...) tren H2 - tranh rui ro
+    # incompatibility giua cu phap PostgreSQL va H2 dan den context load that bai khi test.
+    # Flyway van la nguon schema DUY NHAT khi chay that voi PostgreSQL (production/dev).
+    hibernate:
+      ddl-auto: create-drop
+  flyway:
+    enabled: false
+  kafka:
+    bootstrap-servers: ${spring.embedded.kafka.brokers:localhost:9092}
+  mail:
+    host: localhost
+    port: 1025
+
+
+notification:
+  mail-enabled: false
+  sms-enabled: false
+
+jwt:
+  secret-key: test-only-secret-key-0123456789-abcdefghij

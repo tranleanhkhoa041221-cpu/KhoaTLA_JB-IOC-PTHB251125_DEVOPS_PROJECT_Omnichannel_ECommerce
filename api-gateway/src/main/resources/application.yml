@@ -1,0 +1,199 @@
+spring:
+  application:
+    name: api-gateway
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  cloud:
+    gateway:
+      server:
+        webflux:
+          # Tu dong khong tim service qua Discovery Client nua - tat hoan toan de tranh warning
+          # va dam bao routing chi dua tren URI tuong minh duoi day (Docker service name).
+          discovery:
+            locator:
+              enabled: false
+
+          # Danh sach route duoc danh gia THEO DUNG THU TU khai bao (first-match-wins). Vi vay
+          # route cong khai cho VNPay webhook (/api/payments/vnpay/**) PHAI dung TRUOC route
+          # /api/payments/** o duoi, neu khong predicate Path cua route /api/payments/** se
+          # "nuot" luon request webhook truoc khi toi duoc route dung.
+          routes:
+            # ===================== IDENTITY & USER SERVICE =====================
+            - id: identity-auth-public
+              uri: http://${IDENTITY_HOST:identity-user-service}:${IDENTITY_PORT:8082}
+              predicates:
+                - Path=/api/users/register,/api/users/login,/api/users/refresh-token,/api/users/validate-token
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    # Gioi han chat hon cho nhom dang nhap/dang ky de chong brute-force/credential
+                    # stuffing - request toi uu KHAC voi 1 request duyet san pham thong thuong.
+                    redis-rate-limiter.replenishRate: ${LOGIN_RATE_REPLENISH:5}
+                    redis-rate-limiter.burstCapacity: ${LOGIN_RATE_BURST:10}
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@clientIpKeyResolver}"
+
+            - id: identity-user-service
+              uri: http://${IDENTITY_HOST:identity-user-service}:${IDENTITY_PORT:8082}
+              predicates:
+                - Path=/api/users/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userOrIpKeyResolver}"
+
+            # ===================== PRODUCT CATALOG SERVICE =====================
+            - id: product-catalog-service
+              uri: http://${PRODUCT_HOST:product-catalog-service}:${PRODUCT_PORT:8083}
+              predicates:
+                - Path=/api/catalog/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    # Cho phep cao hon vi day la luu luong duyet/tim san pham - nhieu nhat luc Flash Sale.
+                    redis-rate-limiter.replenishRate: 100
+                    redis-rate-limiter.burstCapacity: 200
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userOrIpKeyResolver}"
+
+            # ===================== PAYMENT & BILLING SERVICE =====================
+            # Webhook VNPay goi THANG vao day (server-to-server, KHONG co Bearer token cua user) -
+            # phai la route CONG KHAI va dat TRUOC route /api/payments/** o duoi.
+            - id: payment-vnpay-webhook-public
+              uri: http://${PAYMENT_HOST:payment-billing-service}:${PAYMENT_PORT:8085}
+              predicates:
+                - Path=/api/payments/vnpay/**
+
+            - id: payment-billing-service
+              uri: http://${PAYMENT_HOST:payment-billing-service}:${PAYMENT_PORT:8085}
+              predicates:
+                - Path=/api/payments/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userOrIpKeyResolver}"
+
+            # ===================== ORDER & INVENTORY SERVICE (chiu tai cao nhat - Flash Sale) ====
+            - id: order-inventory-service
+              uri: http://${ORDER_HOST:order-inventory-service}:${ORDER_PORT:8084}
+              predicates:
+                - Path=/api/orders/**,/api/inventory/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: ${ORDER_RATE_REPLENISH:100}
+                    redis-rate-limiter.burstCapacity: ${ORDER_RATE_BURST:300}
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userOrIpKeyResolver}"
+
+            # ===================== NOTIFICATION SERVICE =====================
+            - id: notification-service
+              uri: http://${NOTIFICATION_HOST:notification-service}:${NOTIFICATION_PORT:8086}
+              predicates:
+                - Path=/api/notifications/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userOrIpKeyResolver}"
+
+            # ===================== API DOCS AGGREGATION (Swagger moi service qua 1 cong) =========
+            - id: identity-user-service-docs
+              uri: http://${IDENTITY_HOST:identity-user-service}:${IDENTITY_PORT:8082}
+              predicates:
+                - Path=/docs/identity-user-service/**
+              filters:
+                - StripPrefix=2
+                - RewritePath=/v3/api-docs, /v3/api-docs
+            - id: product-catalog-service-docs
+              uri: http://${PRODUCT_HOST:product-catalog-service}:${PRODUCT_PORT:8083}
+              predicates:
+                - Path=/docs/product-catalog-service/**
+              filters:
+                - StripPrefix=2
+                - RewritePath=/v3/api-docs, /v3/api-docs
+            - id: order-inventory-service-docs
+              uri: http://${ORDER_HOST:order-inventory-service}:${ORDER_PORT:8084}
+              predicates:
+                - Path=/docs/order-inventory-service/**
+              filters:
+                - StripPrefix=2
+                - RewritePath=/v3/api-docs, /v3/api-docs
+            - id: payment-billing-service-docs
+              uri: http://${PAYMENT_HOST:payment-billing-service}:${PAYMENT_PORT:8085}
+              predicates:
+                - Path=/docs/payment-billing-service/**
+              filters:
+                - StripPrefix=2
+                - RewritePath=/v3/api-docs, /v3/api-docs
+            - id: notification-service-docs
+              uri: http://${NOTIFICATION_HOST:notification-service}:${NOTIFICATION_PORT:8086}
+              predicates:
+                - Path=/docs/notification-service/**
+              filters:
+                - StripPrefix=2
+                - RewritePath=/v3/api-docs, /v3/api-docs
+
+server:
+  port: ${SERVER_PORT:8080}
+
+# ==========================================================================
+# BAT BUOC trung khop CHINH XAC voi identity-user-service (cung secret, cung
+# thuat toan HS256) - day la DIEU KIEN DE Gateway tu xac thuc duoc chu ky cua
+# token do Identity Service phat hanh ma KHONG can goi REST sang do moi request.
+# ==========================================================================
+jwt:
+  secret-key: ${JWT_SECRET_KEY}
+
+# Cac pattern duoi day duoc JwtAuthenticationGlobalFilter cho QUA KHONG can Bearer token.
+# Ho tro wildcard Ant-style (**, *) qua AntPathMatcher. "method: ANY" nghia la moi HTTP method.
+gateway:
+  security:
+    public-endpoints:
+      - method: ANY
+        pattern: /api/users/register
+      - method: ANY
+        pattern: /api/users/login
+      - method: ANY
+        pattern: /api/users/refresh-token
+      - method: ANY
+        pattern: /api/users/validate-token
+      - method: ANY
+        pattern: /api/payments/vnpay/**
+      - method: GET
+        pattern: /api/catalog/**
+      # Chỉ health được public (Nginx cũng chặn /actuator từ Internet). Docs chỉ bật ở môi trường dev.
+      - method: GET
+        pattern: /actuator/health
+      - method: GET
+        pattern: /actuator/health/**
+      # Prometheus (trong docker network) scrape duoc. Nginx tren host chan /actuator tu Internet nen KHONG bi lo ra ngoai.
+      - method: GET
+        pattern: /actuator/prometheus
+  cors:
+    # Dev: cho phep tat ca origin. PRODUCTION: doi thanh domain that cua Web/Mobile App
+    # (vd https://shop.mydomain.com) qua bien moi truong CORS_ALLOWED_ORIGINS truoc khi deploy VPS.
+    allowed-origins: ${CORS_ALLOWED_ORIGINS}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
+logging:
+  level:
+    com.quickbite.edu: ${LOG_LEVEL:INFO}
+    org.springframework.cloud.gateway: INFO

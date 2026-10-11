@@ -1,0 +1,326 @@
+# =============================================================================
+# docker-compose.production.yml — QuickBite Omnichannel E-Commerce
+# Toi uu cho VPS nho (mac dinh = preset "lite": 1 vCPU / 1 GB RAM + 2 GB swap).
+# Doi preset bang cach nap them profiles/standard.env vao .env (>= 4 GB RAM).
+#
+# Khac biet so voi ban cu:
+#  - KHONG build tren VPS (1 GB RAM khong du cho Gradle): CI build -> GHCR -> VPS `docker compose pull`.
+#  - Kafka chay che do KRaft (bo ZooKeeper, tiet kiem ~300 MB RAM).
+#  - Moi container co mem_limit + JAVA_OPTS (Xmx) rieng, log rotation, Redis volatile-lru.
+#  - Gateway chi bind 127.0.0.1:8080 -> Nginx tren host la cong duy nhat ra Internet
+#    (Docker bo qua UFW neu publish 0.0.0.0, nen BAT BUOC bind 127.0.0.1).
+#  - Moi service dung ROLE Postgres rieng (Database-per-Service that su).
+# KHONG co: Eureka, MongoDB, Elasticsearch, RabbitMQ (source khong dung).
+# =============================================================================
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-svc-common: &svc-common
+  restart: unless-stopped
+  logging: *default-logging
+  networks: [backend-network]
+
+x-healthcheck: &svc-health-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 180s   # 1 vCPU khoi dong Spring Boot cham -> can start_period dai
+
+services:
+
+  # ============================ INFRASTRUCTURE ============================
+  postgres:
+    <<: *svc-common
+    image: postgres:16-alpine
+    container_name: postgres
+    mem_limit: ${MEM_POSTGRES:-160m}
+    command: >
+      postgres
+      -c shared_buffers=${PG_SHARED_BUFFERS:-48MB}
+      -c effective_cache_size=${PG_EFFECTIVE_CACHE:-128MB}
+      -c work_mem=2MB
+      -c maintenance_work_mem=16MB
+      -c max_connections=${PG_MAX_CONNECTIONS:-60}
+      -c wal_compression=on
+      -c checkpoint_timeout=15min
+      -c log_min_duration_statement=1000
+    environment:
+      POSTGRES_USER: ${DB_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${DB_SUPERUSER_PASSWORD:?Thieu DB_SUPERUSER_PASSWORD}
+      POSTGRES_MULTIPLE_DATABASES: identity_user_db,product_catalog_db,order_inventory_db,payment_billing_db,notification_db
+      DB_PASS_IDENTITY_USER: ${DB_PASS_IDENTITY_USER:?missing}
+      DB_PASS_PRODUCT_CATALOG: ${DB_PASS_PRODUCT_CATALOG:?missing}
+      DB_PASS_ORDER_INVENTORY: ${DB_PASS_ORDER_INVENTORY:?missing}
+      DB_PASS_PAYMENT_BILLING: ${DB_PASS_PAYMENT_BILLING:?missing}
+      DB_PASS_NOTIFICATION: ${DB_PASS_NOTIFICATION:?missing}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init-multiple-databases.sh:/docker-entrypoint-initdb.d/init-multiple-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_SUPERUSER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    <<: *svc-common
+    image: redis:7-alpine
+    container_name: redis
+    mem_limit: ${MEM_REDIS:-64m}
+    # volatile-lru: chi duoc xoa key CO TTL (rate-limit bucket, lock deu co TTL) -> lock khong bi day ra som
+    command: redis-server --maxmemory ${REDIS_MAXMEMORY:-40mb} --maxmemory-policy volatile-lru --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  kafka:
+    <<: *svc-common
+    image: apache/kafka:3.8.1          # KRaft, khong can ZooKeeper
+    container_name: kafka
+    mem_limit: ${MEM_KAFKA:-320m}
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS: 3     # mac dinh 50 partition cho __consumer_offsets -> ton RAM/file handle vo ich tren 1 broker
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_RETENTION_BYTES: 268435456
+      KAFKA_LOG_SEGMENT_BYTES: 67108864
+      KAFKA_HEAP_OPTS: ${KAFKA_HEAP:--Xms128m -Xmx160m}
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # nc -z chi mo TCP (nhe). KHONG dung kafka-broker-api-versions.sh: moi lan chay no khoi dong 1 JVM (~150MB) -> OOM tren VPS 1GB.
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+  # ============================== MICROSERVICES ===========================
+  identity-user-service:
+    <<: *svc-common
+    image: ${IMAGE_PREFIX:?Thieu IMAGE_PREFIX, vd ghcr.io/ten-ban}/identity-user-service:${IMAGE_TAG:-latest}
+    container_name: identity-user-service
+    mem_limit: ${MEM_SVC:-150m}
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms48m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: identity_user_db
+      DB_USERNAME: identity_user
+      DB_PASSWORD: ${DB_PASS_IDENTITY_USER}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-5}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-40}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?missing}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:?missing}
+      ADMIN_DEFAULT_PASSWORD: ${ADMIN_DEFAULT_PASSWORD:?missing}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      <<: *svc-health-defaults
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/actuator/health | grep -q '\"status\":\"UP\"' || exit 1"]
+
+  product-catalog-service:
+    <<: *svc-common
+    image: ${IMAGE_PREFIX}/product-catalog-service:${IMAGE_TAG:-latest}
+    container_name: product-catalog-service
+    mem_limit: ${MEM_SVC:-150m}
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms48m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: product_catalog_db
+      DB_USERNAME: product_catalog
+      DB_PASSWORD: ${DB_PASS_PRODUCT_CATALOG}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-5}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-40}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      PRODUCT_GRPC_PORT: "9091"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      <<: *svc-health-defaults
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health | grep -q '\"status\":\"UP\"' || exit 1"]
+
+  order-inventory-service:
+    <<: *svc-common
+    image: ${IMAGE_PREFIX}/order-inventory-service:${IMAGE_TAG:-latest}
+    container_name: order-inventory-service
+    mem_limit: ${MEM_ORDER:-190m}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      identity-user-service: {condition: service_healthy}
+      product-catalog-service: {condition: service_healthy}
+    environment:
+      JAVA_OPTS: ${JAVA_OPTS_ORDER:--Xms64m -Xmx128m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: order_inventory_db
+      DB_USERNAME: order_inventory
+      DB_PASSWORD: ${DB_PASS_ORDER_INVENTORY}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_ORDER:-12}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 2
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_ORDER:-80}
+      SERVER_TOMCAT_THREADS_MINSPARE: 10
+      SERVER_TOMCAT_ACCEPTCOUNT: 100
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PRODUCT_GRPC_HOST: product-catalog-service
+      PRODUCT_GRPC_PORT: "9091"
+      IDENTITY_GRPC_HOST: identity-user-service
+      IDENTITY_GRPC_PORT: "9090"
+      # false = reserve kho bang atomic UPDATE (nhanh, hop 1 vCPU). true = bat Redis Distributed Lock de demo.
+      APP_INVENTORY_USE_REDIS_LOCK: ${USE_REDIS_LOCK:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      <<: *svc-health-defaults
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8084/actuator/health | grep -q '\"status\":\"UP\"' || exit 1"]
+
+  payment-billing-service:
+    <<: *svc-common
+    image: ${IMAGE_PREFIX}/payment-billing-service:${IMAGE_TAG:-latest}
+    container_name: payment-billing-service
+    mem_limit: ${MEM_SVC:-150m}
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      order-inventory-service: {condition: service_healthy}   # tuan tu hoa khoi dong cho 1 vCPU
+    environment:
+      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms48m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: payment_billing_db
+      DB_USERNAME: payment_billing
+      DB_PASSWORD: ${DB_PASS_PAYMENT_BILLING}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-5}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-40}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      VNPAY_TMN_CODE: ${VNPAY_TMN_CODE:-}
+      VNPAY_HASH_SECRET: ${VNPAY_HASH_SECRET:-}
+      VNPAY_RETURN_URL: ${VNPAY_RETURN_URL:-}
+      VNPAY_IPN_URL: ${VNPAY_IPN_URL:-}
+      VNPAY_IPN_ALLOWED_IPS: ${VNPAY_IPN_ALLOWED_IPS:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      <<: *svc-health-defaults
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health | grep -q '\"status\":\"UP\"' || exit 1"]
+
+  notification-service:
+    <<: *svc-common
+    image: ${IMAGE_PREFIX}/notification-service:${IMAGE_TAG:-latest}
+    container_name: notification-service
+    mem_limit: ${MEM_SVC:-150m}
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      payment-billing-service: {condition: service_healthy}
+      identity-user-service: {condition: service_healthy}
+    environment:
+      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms48m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: notification_db
+      DB_USERNAME: notification
+      DB_PASSWORD: ${DB_PASS_NOTIFICATION}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-5}
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-40}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      IDENTITY_GRPC_HOST: identity-user-service
+      IDENTITY_GRPC_PORT: "9090"
+      MAIL_HOST: ${MAIL_HOST:-smtp.gmail.com}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      NOTIFICATION_MAIL_ENABLED: ${NOTIFICATION_MAIL_ENABLED:-false}
+      NOTIFICATION_SMS_ENABLED: ${NOTIFICATION_SMS_ENABLED:-false}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      <<: *svc-health-defaults
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8086/actuator/health | grep -q '\"status\":\"UP\"' || exit 1"]
+
+  api-gateway:
+    <<: *svc-common
+    image: ${IMAGE_PREFIX}/api-gateway:${IMAGE_TAG:-latest}
+    container_name: api-gateway
+    mem_limit: ${MEM_SVC:-150m}
+    depends_on:
+      redis: {condition: service_healthy}
+      identity-user-service: {condition: service_healthy}
+      product-catalog-service: {condition: service_healthy}
+      order-inventory-service: {condition: service_healthy}
+      payment-billing-service: {condition: service_healthy}
+      # notification chi can "started": demo tat Notification van dat hang duoc
+      notification-service: {condition: service_started}
+    ports:
+      # CHI bind loopback: Nginx (host) la cua ngo duy nhat ra Internet. Docker bo qua UFW neu bind 0.0.0.0.
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+    environment:
+      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms48m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      SERVER_PORT: "8080"
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?Dat CORS_ALLOWED_ORIGINS = domain frontend, KHONG dung *}
+      IDENTITY_HOST: identity-user-service
+      IDENTITY_PORT: "8082"
+      PRODUCT_HOST: product-catalog-service
+      PRODUCT_PORT: "8083"
+      ORDER_HOST: order-inventory-service
+      ORDER_PORT: "8084"
+      PAYMENT_HOST: payment-billing-service
+      PAYMENT_PORT: "8085"
+      NOTIFICATION_HOST: notification-service
+      NOTIFICATION_PORT: "8086"
+      # Rate limit: mac dinh an toan; dat cao hon trong .env khi chay demo tai (xem load-test/README)
+      LOGIN_RATE_REPLENISH: ${LOGIN_RATE_REPLENISH:-5}
+      LOGIN_RATE_BURST: ${LOGIN_RATE_BURST:-10}
+      ORDER_RATE_REPLENISH: ${ORDER_RATE_REPLENISH:-100}
+      ORDER_RATE_BURST: ${ORDER_RATE_BURST:-300}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      <<: *svc-health-defaults
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"' || exit 1"]
+
+networks:
+  backend-network:
+    driver: bridge
+    name: quickbite-backend
+
+volumes:
+  postgres-data:
+    name: quickbite-postgres-data
+  kafka-data:
+    name: quickbite-kafka-data

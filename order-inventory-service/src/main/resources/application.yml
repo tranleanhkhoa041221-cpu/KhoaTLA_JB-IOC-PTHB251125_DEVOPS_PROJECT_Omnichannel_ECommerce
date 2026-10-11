@@ -1,0 +1,147 @@
+spring:
+  application:
+    name: order-inventory-service
+
+  datasource:
+    # SUA LOI: truoc day la port 5434, KHONG khop voi quy uoc Postgres local port 5433 dung
+    # CHUNG cho ca du an (xem comment trong notification-service/docker-compose.snippet.yml:
+    # "identity-user-service va payment-billing-service trong du an nay CUNG dang tro toi
+    # localhost:5433"). Khong co bang chung nao trong project (khong co docker-compose/README)
+    # cho thay co 1 instance Postgres THU HAI chay rieng tren port 5434 - day la gia tri sai/
+    # con sot lai, khong phai chu dinh tach instance. Doi ve 5433 de dong bo voi 4 service
+    # Postgres con lai (identity/payment/notification/product-catalog), ca 5 cung mot Postgres
+    # server, tach biet bang database name khac nhau (dung chuan Database-per-Service cua de bai).
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:order_inventory_db}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    # Performance/Scalability (Flash Sale 500-1000 req/s): HikariCP mac dinh CHI co
+    # maximum-pool-size=10 neu khong khai bao gi them. Day la service "chiu tai cao nhat"
+    # theo dung de bai (tao don hang + giu/tra kho, moi thao tac deu can >= 1 ket noi DB cho
+    # 1 giao dich REQUIRES_NEW ngan). 10 ket noi la QUA IT, se khien phan lon request phai
+    # CHO (queue) de co connection ngay ca khi khong tranh chap cung 1 SKU (vi du 50 don hang
+    # cho 50 SKU khac nhau, hoan toan khong bi Redis lock chan nhau, van bi NGHEN tai tang
+    # connection pool). Tang len 30 + giam connection-timeout de fail-fast thay vi treo lau.
+    hikari:
+      maximum-pool-size: 30
+      minimum-idle: 10
+      connection-timeout: 3000
+      pool-name: OrderInventoryHikariPool
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 3000ms
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+    consumer:
+      group-id: order-inventory-service
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    # "ack-mode" KHONG phai thuoc tinh cua spring.kafka.consumer.* (truoc day bi dat nham o day
+    # nen bi Spring Boot am tham BO QUA, khong gay loi startup nhung cung khong co tac dung gi) -
+    # duong dan dung la spring.kafka.listener.ack-mode. Dat tuong minh = batch (thay vi an sau
+    # mac dinh ngam) de xac nhan ro: cung voi enable-auto-commit=false o tren, Spring Kafka se
+    # TU COMMIT offset NGAY SAU KHI method @KafkaListener return thanh cong (khong phai theo
+    # timer nhu auto-commit mac dinh cua Kafka client) - dam bao "khong mat event" ke ca khi
+    # consumer crash GIUA LUC dang xu ly (offset chua kip commit thi se duoc Kafka redeliver lai
+    # dung message do sau khi service khoi dong lai).
+    listener:
+      ack-mode: batch
+      # Khop voi so partition=3 cua topic payment.completed/payment.failed (KafkaTopicConfig
+      # ben payment-billing-service). Neu de mac dinh concurrency=1, service nay CHI dung 1
+      # thread xu ly ca 3 partition -> khong tan dung duoc partition de song song hoa, thanh
+      # "co 3 lan Kafka") du van dung (khong sai lech du lieu) nhung cham hon muc can thiet
+      # khi Flash Sale sinh nhieu ket qua thanh toan dong thoi.
+      concurrency: 3
+
+  grpc:
+    client:
+      channels:
+        product-catalog-service:
+          address: static://${PRODUCT_GRPC_HOST:localhost}:${PRODUCT_GRPC_PORT:9091}
+          negotiation-type: plaintext
+        identity-user-service:
+          address: static://${IDENTITY_GRPC_HOST:localhost}:${IDENTITY_GRPC_PORT:9090}
+          negotiation-type: plaintext
+
+  # Performance/Scalability: Spring Boot mac dinh CHI dung 1 thread DUY NHAT (TaskScheduler
+  # pool size = 1) cho TOAN BO cac method @Scheduled trong ung dung. Service nay co 2 job chay
+  # dinh ky dong thoi: OutboxEventPublisher (moi 1 giay) va SagaCompensationJob (moi 5 phut).
+  # Neu chi co 1 thread, khi OutboxEventPublisher dang ban xu ly mot tick (dac biet luc Flash
+  # Sale, du da song song hoa noi bo qua ExecutorService rieng - xem OutboxEventPublisher), job
+  # SagaCompensationJob se bi CHAN/tre lich chay cho den khi tick Outbox hien tai xong, lam cham
+  # viec tu dong huy don PENDING qua han. Tang len 2 de 2 job khong canh tranh thread cua nhau.
+  task:
+    scheduling:
+      pool:
+        size: 2
+
+# PHAI trung khop CHINH XAC voi identity-user-service (cung secret, cung HS256) de service
+# nay tu xac thuc duoc token do Identity Service phat hanh (defense in depth, khong chi dua
+# vao API Gateway).
+jwt:
+  secret-key: ${JWT_SECRET_KEY}
+
+server:
+  port: 8084
+  # Performance/Scalability (Flash Sale 500-1000 req/s): Tomcat mac dinh CHI co 200 worker
+  # thread va accept-count=100. RedisLockService.executeWithLock() BLOCK thread hien tai (poll
+  # moi 50ms, toi da 3s) khi nhieu request cung tranh 1 SKU - day la hanh vi DUNG/chap nhan duoc
+  # (fail-fast voi 409 thay vi oversell), nhung can du thread de KHONG lam nghen cac request
+  # KHAC (mua SKU khac, xem don hang...) trong luc do. Tang threads.max + accept-count de dat
+  # throughput muc tieu cua de bai ma khong bi Tomcat tu choi ket noi (Connection refused) som.
+  tomcat:
+    threads:
+      max: 400
+      min-spare: 50
+    accept-count: 200
+    max-connections: 10000
+
+logging:
+  level:
+    com.quickbite.edu: ${LOG_LEVEL:INFO}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+
+
+# =====================================================================
+# Saga Compensation Job Configuration
+# =====================================================================
+app:
+  saga:
+    # Don PENDING qua 30 phut se bi tu dong huy va tra lai ton kho.
+    # Dat >= timeout cua VNPay (15 phut) + buffer de tranh huy don dang thanh toan.
+    stale-order-threshold-minutes: 30
+    # Cron: chay moi 5 phut. Chinh sua o day neu muon tan suat khac.
+    compensation-cron: "0 */5 * * * *"

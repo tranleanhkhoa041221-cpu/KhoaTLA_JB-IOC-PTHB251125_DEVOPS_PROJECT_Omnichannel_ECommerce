@@ -1,0 +1,77 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.quickbite'
+version = '0.0.1-SNAPSHOT'
+description = 'api-gateway'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+ext {
+    set('springCloudVersion', "2025.1.3")
+}
+
+dependencies {
+    // --- Spring Cloud Gateway: dung ban REACTIVE (Netty, non-blocking I/O) chu khong phai
+    // Gateway MVC (servlet, blocking). Day la lua chon BAT BUOC ve kien truc cho 1 API Gateway
+    // dung lam Single Point of Entry chiu tai cao (Flash Sale 500-1000 req/s theo muc 5 de bai):
+    // moi request toi Gateway deu phai proxy tiep sang 1 service phia sau (them 1 vong network),
+    // neu dung model blocking (1 thread/request) thi so luong thread/connection can de giu ket
+    // noi dong thoi se bung no rat nhanh duoi tai cao. Model reactive chi dung so luong nho
+    // thread (event-loop) de xu ly hang nghin connection dong thoi dang cho phan hoi tu backend.
+    // LOI BUILD NGHIEM TRONG DA SUA: artifact "spring-cloud-starter-gateway" (ten cu, generic)
+    // DA BI GO BO HOAN TOAN khoi Spring Cloud 2025.1.x (Oakwood release notes: "Remove deprecated
+    // artifacts in favor of new ones") - build.gradle voi ten cu se KHONG resolve duoc dependency,
+    // gradle build se THAT BAI ngay buoc dependency resolution. Ten dung cho ban WebFlux (reactive,
+    // bat buoc cho 1 Gateway chiu tai cao theo phan tich o tren) la "...-gateway-server-webflux".
+    implementation 'org.springframework.cloud:spring-cloud-starter-gateway-server-webflux'
+
+    // --- Redis (reactive client): luu "bucket" cho Rate Limiting (RedisRateLimiter cua Spring
+    // Cloud Gateway yeu cau ReactiveRedisConnectionFactory). Dung LAI Redis da co san trong he
+    // thong (order-inventory-service dang dung Redis de Lock chong Race Condition) - khong can
+    // dung them 1 ha tang moi, chi tach bang database index khac (xem application.yml).
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
+
+    // --- JWT: xac thuc token NGAY TAI GATEWAY truoc khi cho request di tiep vao he thong noi
+    // bo - dung CUNG bo thu vien va CUNG thuat toan (HS256) voi noi phat hanh token
+    // (identity-user-service) de co the tu verify chu ky ma KHONG can goi REST sang Identity
+    // Service tren MOI request (tranh Gateway tro thanh bottleneck/chatty call duoi tai cao).
+    implementation 'io.jsonwebtoken:jjwt-api:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.11.5'
+
+    // --- Actuator + Prometheus: health-check cho Docker/K8s, expose /actuator/gateway/routes
+    // de debug bang route nao dang active, va metrics cho Prometheus (dong bo voi cac service khac).
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'io.micrometer:micrometer-registry-prometheus'
+
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'io.projectreactor:reactor-test'
+    testCompileOnly 'org.projectlombok:lombok'
+    testAnnotationProcessor 'org.projectlombok:lombok'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.cloud:spring-cloud-dependencies:${springCloudVersion}"
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

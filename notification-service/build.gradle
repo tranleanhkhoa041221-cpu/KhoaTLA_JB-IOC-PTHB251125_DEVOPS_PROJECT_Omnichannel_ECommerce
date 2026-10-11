@@ -1,0 +1,108 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'com.google.protobuf' version '0.9.6'
+}
+
+group = 'com.quickbite'
+version = '0.0.1-SNAPSHOT'
+description = 'notification-service'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Spring Security + JJWT: service TU XAC THUC JWT doc lap voi API Gateway (defense in depth).
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'io.jsonwebtoken:jjwt-api:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.11.5'
+
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // PostgreSQL: luu nhat ky gui tin (theo de bai: MongoDB hoac Redis/Mongo cho log — dung PG cho dong bo stack Java cua project)
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    runtimeOnly 'org.postgresql:postgresql'
+    implementation 'org.springframework.boot:spring-boot-starter-flyway'
+
+    // Kafka: consume order.created, order.cancelled, payment.completed, payment.failed
+    implementation 'org.springframework.boot:spring-boot-starter-kafka'
+
+    // gRPC client: Notification goi Identity/User Service de lay email + phone + fullName.
+    implementation 'org.springframework.boot:spring-boot-starter-grpc-client'
+
+    // Mail: gui email that (SMTP) hoac fallback sang log console khi tat mail
+    implementation 'org.springframework.boot:spring-boot-starter-mail'
+
+    // Twilio: gui SMS that qua Twilio Programmable Messaging API (fallback sang log console khi tat).
+    // Loai tru Jackson 2.x classic ma Twilio SDK keo theo transitively: project dung Jackson 3
+    // (tools.jackson.*), giu ca 2 phien ban Jackson tren classpath la khong can thiet va co the
+    // gay nhieu autoconfig - Twilio dung OkHttp noi bo, khong anh huong khi loai bo cac module nay.
+    implementation('com.twilio.sdk:twilio:10.1.5') {
+        exclude group: 'com.fasterxml.jackson.core', module: 'jackson-databind'
+        exclude group: 'com.fasterxml.jackson.core', module: 'jackson-core'
+        exclude group: 'com.fasterxml.jackson.core', module: 'jackson-annotations'
+    }
+
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // Prometheus: BAT BUOC de /actuator/prometheus hoat dong that su - thieu dependency nay thi
+    // Spring Boot se KHONG dang ky endpoint prometheus du co khai bao trong exposure.include.
+    implementation 'io.micrometer:micrometer-registry-prometheus'
+
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.0'
+
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-kafka-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-validation-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-actuator-test'
+    testCompileOnly 'org.projectlombok:lombok'
+    testAnnotationProcessor 'org.projectlombok:lombok'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testRuntimeOnly 'com.h2database:h2'
+    testImplementation 'org.springframework.kafka:spring-kafka-test'
+}
+
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+protobuf {
+    protoc {
+        artifact = "com.google.protobuf:protoc:3.25.1"
+    }
+    plugins {
+        grpc {
+            artifact = "io.grpc:protoc-gen-grpc-java:1.68.1"
+        }
+    }
+    generateProtoTasks {
+        all().each { task ->
+            task.plugins {
+                grpc {}
+            }
+        }
+    }
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs 'build/generated/sources/proto/main/grpc',
+                    'build/generated/sources/proto/main/java'
+        }
+    }
+}

@@ -1,0 +1,19 @@
+# Secrets - KHONG BAO GIO commit
+.env
+.env.*
+!.env.example
+!.env.production.example
+*.pem
+id_*
+qb_deploy*
+# Build / IDE
+**/build/
+**/.gradle/
+.idea/
+*.iml
+.vscode/
+# Runtime tren VPS
+otel/
+backups/
+*.zip
+*.dump

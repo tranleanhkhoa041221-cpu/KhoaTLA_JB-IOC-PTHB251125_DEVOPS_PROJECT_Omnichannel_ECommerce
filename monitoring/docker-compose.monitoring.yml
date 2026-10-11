@@ -1,0 +1,150 @@
+# =============================================================================
+# monitoring/docker-compose.monitoring.yml — QuickBite Monitoring Stack
+#
+# 3 MỨC (mem_limit tối đa; thực tế dùng ít hơn):
+#   MIN  (prometheus 128m + grafana 128m = 256m)  -> VPS >= 2GB RAM, bắt buộc có swap:
+#        docker compose -f docker-compose.production.yml -f monitoring/docker-compose.monitoring.yml up -d prometheus grafana
+#   FULL (prometheus 128 + grafana 128 + loki 200 + promtail 80 + jaeger 256 = 792m tổng monitoring) -> khuyến nghị VPS >= 4GB:
+#        docker compose -f docker-compose.production.yml -f monitoring/docker-compose.monitoring.yml --profile full up -d
+#   TRACING (OpenTelemetry Java agent) -> thêm -f monitoring/docker-compose.tracing.yml (VPS >= 4GB, xem file đó)
+# Core services đã chiếm tổng mem_limit ~1.48GB (+OS/Nginx ~150MB) => 1GB KHÔNG chạy được monitoring; 2GB chỉ MIN.
+#
+# Lệnh `up -d` không kèm tên service ở chế độ mặc định sẽ chỉ khởi động service KHÔNG có profile (prometheus, grafana).
+#
+# Truy cập Grafana qua SSH tunnel (KHÔNG mở port 3000 ra internet):
+#   ssh -L 3000:127.0.0.1:3000 root@<VPS_IP>
+#   → mở http://localhost:3000 trên máy cá nhân
+#
+# Truy cập Jaeger UI:
+#   ssh -L 16686:127.0.0.1:16686 root@<VPS_IP>
+#   → mở http://localhost:16686
+# =============================================================================
+
+x-mon-logging: &mon-logging
+  driver: json-file
+  options:
+    max-size: "5m"
+    max-file: "2"
+
+services:
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *mon-logging
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=1d"        # 1 ngày đủ cho demo, tiết kiệm disk
+      - "--storage.tsdb.retention.size=512MB"
+      - "--web.enable-lifecycle"                   # cho phép reload config không restart
+      - "--query.max-concurrency=2"
+      - "--storage.tsdb.wal-compression"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom-data:/prometheus
+    networks: [ backend-network ]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  loki:
+    image: grafana/loki:3.1.1
+    container_name: loki
+    restart: unless-stopped
+    profiles: [ "full" ]
+    mem_limit: 200m
+    logging: *mon-logging
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    networks: [ backend-network ]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    container_name: promtail
+    restart: unless-stopped
+    profiles: [ "full" ]
+    mem_limit: 80m
+    logging: *mon-logging
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./monitoring/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [ backend-network ]
+    depends_on:
+      loki: { condition: service_healthy }
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: jaeger
+    restart: unless-stopped
+    profiles: [ "full" ]
+    mem_limit: 256m
+    logging: *mon-logging
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: memory
+      # Giới hạn số span trong memory để tránh OOM
+      MEMORY_MAX_TRACES: "10000"
+    # CHỈ bind loopback (truy cập qua SSH tunnel)
+    ports:
+      - "127.0.0.1:16686:16686"   # Jaeger UI
+      - "127.0.0.1:4317:4317"     # OTLP gRPC
+      - "127.0.0.1:4318:4318"     # OTLP HTTP
+    networks: [ backend-network ]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:14269/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *mon-logging
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD in .env}"
+      GF_SECURITY_ADMIN_USER: "admin"
+      # KHÔNG đặt GF_SERVER_HTTP_ADDR=127.0.0.1: Docker forward vào IP của container, Grafana nghe loopback trong container sẽ KHÔNG truy cập được.
+      # Loopback-only đã được đảm bảo bởi ports: "127.0.0.1:3000:3000" bên dưới.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_LOG_MODE: "console"
+      GF_LOG_LEVEL: "warn"
+      # Datasources tự động provision
+      GF_PATHS_PROVISIONING: "/etc/grafana/provisioning"
+    ports:
+      - "127.0.0.1:3000:3000"     # truy cập qua SSH tunnel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks: [ backend-network ]
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  prom-data:
+    name: quickbite-prom-data
+  loki-data:
+    name: quickbite-loki-data
+  grafana-data:
+    name: quickbite-grafana-data

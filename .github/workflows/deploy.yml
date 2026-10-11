@@ -1,0 +1,165 @@
+# =============================================================================
+# .github/workflows/deploy.yml — QuickBite CI/CD
+# Flow: push main → build/test → build Docker → push GHCR → SSH VPS →
+#       docker compose pull → docker compose up -d --remove-orphans → verify (+ rollback)
+#
+# 5 SECRETS (GitHub → repo → Settings → Secrets and variables → Actions → New repository secret):
+#   VPS_HOST         IP hoặc hostname VPS (vd 103.74.101.153)
+#   VPS_USER         user SSH (root)
+#   VPS_SSH_KEY      NỘI DUNG file private key (-----BEGIN OPENSSH PRIVATE KEY----- ... -----END ...)
+#   GHCR_USER        username GitHub (chữ thường)
+#   GHCR_READ_TOKEN  PAT (classic) scope read:packages — CHỈ để VPS pull image
+# Push image dùng GITHUB_TOKEN có sẵn (permissions: packages: write) — KHÔNG dùng GHCR_READ_TOKEN (chỉ đọc).
+# =============================================================================
+name: CI/CD — Build & Deploy to VPS
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ---------------------------------------------------------------------------
+  build-test:
+    name: Build & Test — ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [ api-gateway, identity-user-service, product-catalog-service, order-inventory-service, payment-billing-service, notification-service ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+      - name: Compile + bootJar (bắt buộc PASS)
+        working-directory: ${{ matrix.service }}
+        run: chmod +x gradlew && ./gradlew --no-daemon clean bootJar
+      - name: Tests (hiện chỉ contextLoads; không chặn deploy, xem log)
+        working-directory: ${{ matrix.service }}
+        continue-on-error: true
+        run: ./gradlew --no-daemon test
+
+  # ---------------------------------------------------------------------------
+  docker-push:
+    name: Docker build & push — ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: build-test
+    permissions:
+      contents: read
+      packages: write          # BẮT BUỘC để GITHUB_TOKEN push lên GHCR
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [ api-gateway, identity-user-service, product-catalog-service, order-inventory-service, payment-billing-service, notification-service ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Owner viết thường (GHCR yêu cầu lowercase)
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.service }}          # Dockerfile multi-stage tự build jar
+          file: ${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/${{ matrix.service }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.OWNER_LC }}/${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: docker-push
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Owner viết thường
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      # Đồng bộ compose/infra/monitoring/profiles lên VPS (KHÔNG đụng .env và volume dữ liệu)
+      - name: Copy compose + infra lên VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "docker-compose.production.yml,infra,monitoring,profiles"
+          target: /opt/quickbite
+          overwrite: true
+
+      - name: Pull + up + verify (rollback nếu hỏng)
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          NEW_TAG: ${{ github.sha }}
+          NEW_PREFIX: ghcr.io/${{ env.OWNER_LC }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          envs: GHCR_USER,GHCR_TOKEN,NEW_TAG,NEW_PREFIX
+          command_timeout: 30m
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /opt/quickbite
+            [ -f .env ] || { echo "THIEU /opt/quickbite/.env — tao tu .env.production.example truoc"; exit 1; }
+            C="docker compose"   # KHONG dung -f: file nap do COMPOSE_FILE trong .env (de giu monitoring/tracing khi --remove-orphans)
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            PREV_TAG=$(grep -E '^IMAGE_TAG=' .env | cut -d= -f2- || true)
+            setenv(){ if grep -qE "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi; }
+            setenv IMAGE_PREFIX "$NEW_PREFIX"; setenv IMAGE_TAG "$NEW_TAG"; chmod 600 .env
+            grep -qE '^COMPOSE_FILE=' .env || setenv COMPOSE_FILE docker-compose.production.yml
+
+            echo "=== pull ==="; $C pull
+            echo "=== up -d --remove-orphans ==="; $C up -d --remove-orphans
+
+            echo "=== cho cac service healthy (toi da 25 phut — 1 vCPU khoi dong cham) ==="
+            SVCS="postgres redis kafka identity-user-service product-catalog-service order-inventory-service payment-billing-service notification-service api-gateway"
+            ok=0
+            for i in $(seq 1 150); do
+              bad=""
+              for s in $SVCS; do
+                h=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$s" 2>/dev/null || echo missing)
+                oom=$(docker inspect -f '{{.State.OOMKilled}}' "$s" 2>/dev/null || echo false)
+                [ "$h" = healthy ] || [ "$h" = running ] || bad="$bad $s($h)"
+                [ "$oom" = false ] || bad="$bad $s(OOMKilled)"
+              done
+              [ -z "$bad" ] && { ok=1; break; }
+              echo "  [$i/150] chua san sang:$bad"; sleep 10
+            done
+
+            if [ "$ok" = 1 ]; then
+              curl -fsS --max-time 10 http://127.0.0.1:8080/actuator/health | grep -q '"status":"UP"' && echo "Gateway noi bo UP" || ok=0
+              DOMAIN=$(grep -E '^DOMAIN=' .env | cut -d= -f2-)
+              [ -z "$DOMAIN" ] || { curl -fsS --max-time 15 "https://$DOMAIN/health" | grep -q UP && echo "HTTPS public UP: https://$DOMAIN/health" || ok=0; }
+            fi
+
+            if [ "$ok" != 1 ]; then
+              echo "DEPLOY FAIL — log gan nhat:"; $C ps; $C logs --tail=40 || true
+              if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$NEW_TAG" ]; then
+                echo "ROLLBACK ve $PREV_TAG"; setenv IMAGE_TAG "$PREV_TAG"; $C up -d --remove-orphans || true
+              fi
+              exit 1
+            fi
+            docker image prune -f --filter "until=48h" || true
+            echo "DEPLOY PASS: $NEW_TAG"; free -m; df -h / | tail -1

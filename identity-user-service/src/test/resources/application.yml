@@ -1,0 +1,26 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:identity_user_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    # Test dung Hibernate tu sinh schema truc tiep tu Entity (create-drop) THAY VI chay Flyway
+    # migration V1 (viet thuan cu phap PostgreSQL) tren H2 - tranh rui ro incompatibility va
+    # tranh phai co Postgres THAT dang chay tren localhost chi de context load pass.
+    # Flyway van la nguon schema DUY NHAT khi chay that voi PostgreSQL (production/dev).
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    open-in-view: false
+  flyway:
+    enabled: false
+
+jwt:
+  secret-key: test-secret-key-for-context-load-only-1234567890
+
+admin:
+  default:
+    password: test-only-admin-pw
+internal:
+  api-key: test-only-internal-key

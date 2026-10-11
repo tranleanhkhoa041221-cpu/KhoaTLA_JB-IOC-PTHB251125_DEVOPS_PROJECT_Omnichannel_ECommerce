@@ -1,0 +1,12 @@
+spring:
+  cloud:
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              enabled: false
+          routes: []
+
+jwt:
+  secret-key: test-secret-key-for-context-load-only-1234567890

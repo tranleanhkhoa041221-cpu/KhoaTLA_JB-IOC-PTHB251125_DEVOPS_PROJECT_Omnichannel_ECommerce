@@ -1,0 +1,111 @@
+spring:
+  application:
+    name: notification-service
+
+  # Internal gRPC: Notification -> Identity/User. Docker Compose resolves the service name.
+  grpc:
+    client:
+      channels:
+        identity-user-service:
+          address: static://${IDENTITY_GRPC_HOST:localhost}:${IDENTITY_GRPC_PORT:9090}
+          negotiation-type: plaintext
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:notification_db}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: notification-service
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+      # TRUOC DAY la "true" (BUG NGHIEM TRONG - giong het payment-billing-service): native
+      # Kafka auto-commit commit offset theo TIMER, khong doi listener xu ly xong. Neu service
+      # crash giua luc dang gui Email/SMS ma offset vua bi auto-commit -> mat vinh vien thong
+      # bao do (khach khong nhan duoc email xac nhan don hang). Dat false + ack-mode=batch de
+      # chi commit SAU KHI xu ly xong (co the gui lai trung, nhung da duoc chong trung bang
+      # NotificationLog.idempotencyKey - xem NotificationServiceImpl.dispatch()).
+      enable-auto-commit: false
+    listener:
+      ack-mode: batch
+      # Performance/Scalability: moi @KafkaListener method goi THANG den gui Email (SMTP)/SMS
+      # (Twilio API) MOT CACH DONG BO (blocking I/O, moi lan co the mat vai tram ms den vai giay).
+      # Voi concurrency mac dinh = 1, toan bo notification bi xu ly TUAN TU tung cai mot - trong
+      # 1 dot Flash Sale 500-1000 don/giay day se la diem nghen ro rang nhat he thong (hang doi
+      # gui email/SMS keo dai). Tang len 3 de khop voi so partition=3 cua topic order.created/
+      # order.cancelled (KafkaTopicConfig ben order-inventory-service), cho phep 3 notification
+      # duoc gui song song. Luu y: de bai KHONG yeu cau Notification theo kip toc do Order (muc 5.4
+      # chi yeu cau "tat Notification Service khong anh huong den dat hang", da PASS vi Kafka +
+      # Outbox decouple hoan toan) - day la toi uu them, khong phai sua loi chan dong request.
+      concurrency: 3
+
+  # Gui email qua SMTP. KHONG co credential mac dinh trong source: dat MAIL_USERNAME/MAIL_PASSWORD
+  # (Gmail App Password MOI) qua .env tren VPS. Gmail App Password/Twilio token tung dan vao chat => da thu hoi/tao lai.
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+
+jwt:
+  secret-key: ${JWT_SECRET_KEY}
+
+
+server:
+  port: 8086
+
+notification:
+  # Bat gui email THAT qua SMTP Gmail (mac dinh true vi da co san tai khoan that o tren).
+  # Dat NOTIFICATION_MAIL_ENABLED=false neu muon quay lai che do chi ghi log (khong gui that).
+  mail-enabled: ${NOTIFICATION_MAIL_ENABLED:true}
+  fallback-email-domain: quickbite.local
+
+  # Twilio SMS: KHONG co credential mac dinh trong source (TWILIO_* qua .env). Trial chi gui toi so da Verify.
+  sms-enabled: ${NOTIFICATION_SMS_ENABLED:true}
+  twilio-account-sid: ${TWILIO_ACCOUNT_SID:}
+  twilio-auth-token: ${TWILIO_AUTH_TOKEN:}
+  twilio-from-number: ${TWILIO_FROM_NUMBER:}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+management:
+  health:
+    mail:
+      enabled: false   # SMTP khong duoc ping trong health check (creds rong/tat mail -> health DOWN)
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+
+logging:
+  level:
+    com.quickbite.edu: ${LOG_LEVEL:INFO}

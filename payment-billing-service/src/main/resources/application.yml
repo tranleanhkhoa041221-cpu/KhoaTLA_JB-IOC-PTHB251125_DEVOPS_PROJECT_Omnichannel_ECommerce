@@ -1,0 +1,116 @@
+spring:
+  application:
+    name: payment-billing-service
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:payment_billing_db}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    # Performance/Scalability: service nay TIEU THU topic order.created qua Kafka (khong di
+    # qua Gateway nen KHONG bi gioi han boi RequestRateLimiter cua Gateway) - khi Flash Sale
+    # tao 500-1000 don/giay, payment-billing-service van phai ghi 1 ban ghi Payment cho MOI
+    # don voi toc do tuong duong. HikariCP mac dinh 10 ket noi la qua it cho khoi luong nay.
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 10
+      connection-timeout: 3000
+      pool-name: PaymentBillingHikariPool
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 3
+      properties:
+        # Thieu dong nay truoc do: khi producer tu dong retry (retries=3) sau 1 loi mang, co the
+        # gui TRUNG message neu broker thuc ra DA nhan duoc lan gui dau tien nhung ack bi that lac
+        # tren duong ve. idempotence=true buoc Kafka broker tu loai trung o muc protocol (dua tren
+        # producer id + sequence number), dam bao publish dung 1 lan ke ca khi co retry.
+        enable.idempotence: true
+    consumer:
+      group-id: payment-billing-service
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+      # TRUOC DAY la "true" (BUG NGHIEM TRONG): native Kafka auto-commit commit offset theo
+      # TIMER co dinh (vd moi 5s), KHONG LIEN QUAN gi den viec @KafkaListener da xu ly xong message
+      # hay chua. Neu service crash GIUA LUC dang xu ly (vd dang tao Payment/goi VNPay) ma offset
+      # vua bi auto-commit truoc do -> khoi dong lai se KHONG duoc Kafka gui lai message do nua ->
+      # MAT VINH VIEN event order.created/order.cancelled. Dat false + listener.ack-mode=batch
+      # ben duoi de Spring Kafka CHI commit offset SAU KHI listener method return thanh cong.
+      enable-auto-commit: false
+    listener:
+      ack-mode: batch
+      # Khop voi so partition=3 cua topic order.created/order.cancelled (KafkaTopicConfig ben
+      # order-inventory-service) de tan dung song song hoa khi Flash Sale sinh nhieu don dong thoi.
+      concurrency: 3
+
+jwt:
+  secret-key: ${JWT_SECRET_KEY}
+
+server:
+  port: 8085
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+  api-docs:
+    path: /v3/api-docs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+
+# ==========================================================================
+# Cau hinh VNPay Sandbox - nen tang thanh toan gia lap (the thu, tien khong
+# co that) nhung dung 100% API/luong nghiep vu nhu cong thanh toan that.
+# 1) Dang ky tai khoan Merchant sandbox tai: https://sandbox.vnpayment.vn/devreg/
+# 2) Sau khi duyet, VNPay cap: vnp_TmnCode (ma website) + vnp_HashSecret (khoa bi mat)
+# 3) Dan 2 gia tri do vao tmn-code / hash-secret ben duoi (KHONG commit gia tri that len git,
+#    nen doc tu bien moi truong: ${VNPAY_TMN_CODE} / ${VNPAY_HASH_SECRET})
+# ==========================================================================
+vnpay:
+  tmn-code: ${VNPAY_TMN_CODE:DEMO_TMN_CODE}
+  hash-secret: ${VNPAY_HASH_SECRET:}
+  pay-url: https://sandbox.vnpayment.vn/paymentv2/vpcpay.html
+  api-url: https://sandbox.vnpayment.vn/merchant_webapi/api/transaction
+  # return-url/ipn-url la 2 URL CONG KHAI ma VNPay (he thong BEN NGOAI) goi nguoc vao, khac voi
+  # cac URL inter-service noi bo dung ten Docker DNS - khi deploy VPS thuc te PHAI la domain cong khai
+  # co HTTPS (vd https://api.mypersonsite.com/...), KHONG duoc de localhost (VNPay sandbox khong
+  # the goi vao localhost cua may dev). Parameterize qua env var, giu localhost lam default cho
+  # moi truong local/demo hien tai (dung quy tac de bai: localhost la dung cho local, chua sai).
+  return-url: ${VNPAY_RETURN_URL:http://localhost:8085/api/payments/vnpay/return}
+  ipn-url: ${VNPAY_IPN_URL:http://localhost:8085/api/payments/vnpay/ipn}
+  # Trong = danh sach IP mac dinh cua VNPay; "*" = tat kiem tra IP (chi de test mo phong IPN)
+  ipn-allowed-ips: ${VNPAY_IPN_ALLOWED_IPS:}
+  version: "2.1.0"
+  command: pay
+  curr-code: VND
+  locale: vn
+  order-type: other
+  payment-expire-minutes: 15
+
+logging:
+  level:
+    com.quickbite.edu: ${LOG_LEVEL:INFO}

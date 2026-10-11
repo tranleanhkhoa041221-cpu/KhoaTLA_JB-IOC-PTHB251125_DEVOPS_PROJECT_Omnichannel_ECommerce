@@ -1,0 +1,73 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.1.1'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.quickbite'
+version = '0.0.1-SNAPSHOT'
+description = 'payment-billing-service'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Spring Security + JJWT: service TU XAC THUC JWT doc lap voi API Gateway (defense in depth) -
+    // cung thu vien/version voi identity-user-service.
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'io.jsonwebtoken:jjwt-api:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.11.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.11.5'
+
+    // --- Web layer: chi dung MVC (Servlet). KHONG can webflux vi goi VNPay
+    // bang RestTemplate (dong bo) la du, tranh mix 2 stack web khong can thiet.
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // --- Persistence: PostgreSQL (theo dung yeu cau de bai cho Payment & Billing Service)
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    runtimeOnly 'org.postgresql:postgresql'
+
+    // --- Flyway: quan ly migration script cho bang payments/payment_transaction_logs/outbox_events
+    // (dung ddl-auto=validate, KHONG de Hibernate tu sinh schema o mot service xu ly tien).
+    implementation 'org.springframework.boot:spring-boot-starter-flyway'
+
+    // --- Kafka: nhan OrderCreatedEvent/OrderCancelledEvent, phat PaymentResultEvent (Outbox Pattern)
+    implementation 'org.springframework.boot:spring-boot-starter-kafka'
+
+    // --- Actuator: health-check phuc vu Docker/K8s healthcheck + Prometheus metrics (muc 4.6 cua de bai)
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+
+    // --- OpenAPI/Swagger: sinh tai lieu API tu-dong (de bai yeu cau API-First Design / OpenAPI-Swagger).
+    // KHONG anh huong gi den viec test bang Postman - day chi la 1 UI doc lap tai /swagger-ui.html,
+    // Postman van goi thang REST endpoint nhu binh thuong.
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.0'
+
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-data-jpa-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-kafka-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-validation-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-actuator-test'
+    testCompileOnly 'org.projectlombok:lombok'
+    testAnnotationProcessor 'org.projectlombok:lombok'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // H2: dung cho context load khi test (xem src/test/resources/application.yml) - TRANH
+    // test phai ket noi Postgres/Eureka/Flyway THAT tren localhost (dong bo voi notification-service
+    // va product-catalog-service, da duoc fix truoc do).
+    testRuntimeOnly 'com.h2database:h2'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

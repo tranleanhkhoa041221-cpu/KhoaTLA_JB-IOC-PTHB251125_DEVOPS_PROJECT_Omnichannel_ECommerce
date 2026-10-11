@@ -1,0 +1,36 @@
+# /etc/nginx/sites-available/quickbite  (envsubst '$DOMAIN'). Chi cau hinh HTTP;
+# `certbot --nginx -d $DOMAIN --redirect` se tu them khoi 443 + chung chi Let's Encrypt.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DOMAIN};
+
+    server_tokens off;
+    client_max_body_size 2m;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
+
+    # Khong de lo actuator/docs/swagger ra Internet (chi truy cap noi bo / qua SSH tunnel)
+    location ~ ^/(actuator|docs|swagger-ui|v3/api-docs) { return 404; }
+
+    location = /health {            # health check cong khai, an toan
+        proxy_pass http://qb_gateway/actuator/health;
+        access_log off;
+    }
+
+    location / {
+        limit_req zone=qb_api burst=200 nodelay;
+        limit_conn qb_conn 50;
+        proxy_pass http://qb_gateway;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        # GHI DE (khong noi them) de client khong gia mao IP de lach rate-limit o Gateway
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+    }
+}

@@ -1,0 +1,39 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:payment_billing_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    # Test dung Hibernate tu sinh schema truc tiep tu Entity (create-drop) THAY VI chay Flyway
+    # migration V1 (viet thuan cu phap PostgreSQL) tren H2 - tranh rui ro incompatibility va
+    # tranh phai co Postgres THAT dang chay tren localhost chi de context load pass.
+    # Flyway van la nguon schema DUY NHAT khi chay that voi PostgreSQL (production/dev).
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: false
+    open-in-view: false
+  flyway:
+    enabled: false
+  kafka:
+    bootstrap-servers: ${spring.embedded.kafka.brokers:localhost:9092}
+
+jwt:
+  secret-key: test-secret-key-for-context-load-only-1234567890
+
+# VNPay: khong goi API that trong test context-load, nhung VnPayProperties van can gia tri
+# hop le (khong null) de @ConfigurationProperties binding khong loi. Dung cung default placeholder
+# nhu main application.yml, khong bia gia tri moi.
+vnpay:
+  tmn-code: ${VNPAY_TMN_CODE:DEMO_TMN_CODE}
+  hash-secret: ${VNPAY_HASH_SECRET:DEMO_HASH_SECRET}
+  pay-url: https://sandbox.vnpayment.vn/paymentv2/vpcpay.html
+  api-url: https://sandbox.vnpayment.vn/merchant_webapi/api/transaction
+  return-url: http://localhost:8085/api/payments/vnpay/return
+  ipn-url: http://localhost:8085/api/payments/vnpay/ipn
+  version: "2.1.0"
+  command: pay
+  curr-code: VND
+  locale: vn
+  order-type: other
+  payment-expire-minutes: 15
