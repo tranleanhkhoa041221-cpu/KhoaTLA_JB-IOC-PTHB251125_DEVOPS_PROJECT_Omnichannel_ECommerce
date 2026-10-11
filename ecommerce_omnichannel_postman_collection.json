@@ -304,7 +304,7 @@
                   "pm.collectionVariables.set('customerToken', j.data.accessToken);",
                   "pm.collectionVariables.set('accessToken', j.data.accessToken);",
                   "pm.collectionVariables.set('refreshToken', j.data.refreshToken || '');",
-                  "pm.collectionVariables.set('userId', String(j.data.userId || ''));"
+                  "pm.collectionVariables.set('userId', String(j.data.id || ''));"
                 ]
               }
             }
@@ -345,7 +345,7 @@
                   "pm.test('Admin login 200', () => pm.response.to.have.status(200));",
                   "const j = pm.response.json();",
                   "pm.collectionVariables.set('adminToken', j.data.accessToken);",
-                  "pm.collectionVariables.set('adminUserId', String(j.data.userId || ''));"
+                  "pm.collectionVariables.set('adminUserId', String(j.data.id || ''));"
                 ]
               }
             }
@@ -2200,7 +2200,7 @@
                   "pm.test('200', () => pm.response.to.have.status(200));",
                   "const j=pm.response.json();",
                   "pm.collectionVariables.set('customerBToken', j.data.accessToken);",
-                  "pm.collectionVariables.set('userBId', String(j.data.userId));"
+                  "pm.collectionVariables.set('userBId', String(j.data.id));"
                 ]
               }
             }

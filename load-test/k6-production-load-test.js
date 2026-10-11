@@ -194,7 +194,7 @@ export function setup() {
   }
   const adminData = adminLoginRes.json('data');
   const adminToken = adminData.accessToken;
-  console.log(`✅ Admin login OK, userId=${adminData.userId}`);
+  console.log(`✅ Admin login OK, userId=${adminData.id}`);
 
   // 2. Tạo Brand, Category, Product, Inventory với SKU định danh cho run này
   const runId = Date.now().toString(36).toUpperCase();
@@ -291,7 +291,7 @@ export function setup() {
       isDefault: true,
     }, ud.accessToken);
 
-    users.push({ token: ud.accessToken, id: ud.userId, username });
+    users.push({ token: ud.accessToken, id: ud.id, username });
     sleep(0.05);
   }
 

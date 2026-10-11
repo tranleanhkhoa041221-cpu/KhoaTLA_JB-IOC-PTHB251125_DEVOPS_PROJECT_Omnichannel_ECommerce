@@ -11,7 +11,7 @@ step "Nginx chan actuator/docs";      echo "  /actuator/health -> $(curl -s -o /
 AT=$(j -X POST $B/api/users/login -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" | jq -r .data.accessToken); chk "login admin" "$AT"
 U="cust$R"; step "Tao khach hang $U"
 j -X POST $B/api/users/register -d "{\"username\":\"$U\",\"password\":\"Password123!\",\"email\":\"$U@example.com\",\"fullName\":\"Smoke\",\"phone\":\"09$(printf %08d $((RANDOM*RANDOM%100000000)))\",\"role\":\"CUSTOMER\"}" >/dev/null
-L=$(j -X POST $B/api/users/login -d "{\"username\":\"$U\",\"password\":\"Password123!\"}"); CT=$(echo "$L"|jq -r .data.accessToken); CID=$(echo "$L"|jq -r .data.userId); chk "login customer" "$CT"
+L=$(j -X POST $B/api/users/login -d "{\"username\":\"$U\",\"password\":\"Password123!\"}"); CT=$(echo "$L"|jq -r .data.accessToken); CID=$(echo "$L"|jq -r .data.id); chk "login customer" "$CT"
 j -X POST $B/api/users/addresses -H "Authorization: Bearer $CT" -d '{"recipientName":"Smoke","phone":"0912345678","province":"HCM","district":"Q1","ward":"P1","addressDetail":"1 Test","isDefault":true}' >/dev/null
 step "Tao Brand/Category/Product/Inventory"
 BR=$(j -X POST $B/api/catalog/brands -H "Authorization: Bearer $AT" -d "{\"name\":\"Smoke $R\"}" | jq -r .data.id); chk brandId "$BR"
