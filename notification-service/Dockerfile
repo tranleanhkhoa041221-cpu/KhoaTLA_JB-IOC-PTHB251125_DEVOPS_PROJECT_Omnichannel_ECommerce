@@ -4,7 +4,8 @@
 # Stage 2: chi copy file .jar da build sang JRE-only image (nhe, khong mang theo JDK/Gradle
 # cache) - dung image final nho, khoi dong nhanh, giam attack surface tren VPS production.
 # ============================================================================
-FROM eclipse-temurin:17-jdk-alpine AS builder
+# Builder dung Debian/glibc (jammy), KHONG dung alpine/musl: plugin protobuf tai binary protoc (glibc) -> tren alpine bi loi "protoc.exe: No such file or directory".
+FROM eclipse-temurin:17-jdk-jammy AS builder
 WORKDIR /app
 
 # Copy truoc cac file it doi (wrapper, build script) de tan dung Docker layer cache:

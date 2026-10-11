@@ -3,7 +3,8 @@
 # Stage 1 "builder": build ra file .jar bang Gradle Wrapper
 # Stage 2: chi copy file .jar da build sang JRE-only image (nhe hon, it attack surface)
 # ============================================================================
-FROM eclipse-temurin:17-jdk-alpine AS builder
+# Builder dung Debian/glibc (jammy), KHONG dung alpine/musl: plugin protobuf tai binary protoc (glibc) -> tren alpine bi loi "protoc.exe: No such file or directory".
+FROM eclipse-temurin:17-jdk-jammy AS builder
 WORKDIR /app
 
 # Copy truoc cac file it doi de tan dung Docker layer cache:
