@@ -30,7 +30,7 @@ dependencies {
     // Flyway: schema duoc kiem soat tuong minh bang migration SQL (ddl-auto=validate),
     // KHONG de Hibernate tu sinh/sua schema (update) - service quan ly tai khoan/RBAC
     // can review schema truoc khi apply, dong bo voi cac service con lai.
-    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.springframework.boot:spring-boot-starter-flyway'
     runtimeOnly 'org.flywaydb:flyway-database-postgresql'
     implementation 'org.springframework.boot:spring-boot-starter-grpc-server'
     implementation 'org.springframework.boot:spring-boot-starter-security'
