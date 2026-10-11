@@ -122,7 +122,9 @@ jobs:
           command_timeout: 30m
           script_stop: true
           script: |
-            set -euo pipefail
+            set -Eeuo pipefail
+            # Neu BAT KY lenh nao loi -> in ro lenh + dong + trang thai container (truoc day thoat im lang voi status 1)
+            trap 'rc=$?; echo "!!! LENH LOI (exit $rc) tai dong $LINENO: $BASH_COMMAND"; docker compose ps || true; docker compose logs --tail=60 || true; exit $rc' ERR
             cd /opt/quickbite
             [ -f .env ] || { echo "THIEU /opt/quickbite/.env — tao tu .env.production.example truoc"; exit 1; }
             C="docker compose"   # KHONG dung -f: file nap do COMPOSE_FILE trong .env (de giu monitoring/tracing khi --remove-orphans)
@@ -136,25 +138,43 @@ jobs:
             echo "=== pull ==="; $C pull
             echo "=== up -d --remove-orphans ==="; $C up -d --remove-orphans
 
-            echo "=== cho cac service healthy (toi da 25 phut — 1 vCPU khoi dong cham) ==="
+            echo "=== cho cac service healthy (toi da 25 phut) ==="
             SVCS="postgres redis kafka identity-user-service product-catalog-service order-inventory-service payment-billing-service notification-service api-gateway"
-            ok=0
+            health_of(){ docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" 2>/dev/null || echo missing; }
+            oom_of(){ docker inspect -f '{{.State.OOMKilled}}' "$1" 2>/dev/null || echo false; }
+            ok=0; i=0
             for i in $(seq 1 150); do
               bad=""
               for s in $SVCS; do
-                h=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$s" 2>/dev/null || echo missing)
-                oom=$(docker inspect -f '{{.State.OOMKilled}}' "$s" 2>/dev/null || echo false)
-                [ "$h" = healthy ] || [ "$h" = running ] || bad="$bad $s($h)"
-                [ "$oom" = false ] || bad="$bad $s(OOMKilled)"
+                h=$(health_of "$s"); o=$(oom_of "$s")
+                case "$h" in healthy|running) ;; *) bad="$bad $s($h)";; esac
+                [ "$o" = "false" ] || bad="$bad $s(OOMKilled)"
               done
-              [ -z "$bad" ] && { ok=1; break; }
+              if [ -z "$bad" ]; then ok=1; break; fi
               echo "  [$i/150] chua san sang:$bad"; sleep 10
             done
+            echo "wait-loop ket thuc: ok=$ok (vong $i)"
 
             if [ "$ok" = 1 ]; then
-              curl -fsS --max-time 10 http://127.0.0.1:8080/actuator/health | grep -q '"status":"UP"' && echo "Gateway noi bo UP" || ok=0
-              DOMAIN=$(grep -E '^DOMAIN=' .env | cut -d= -f2-)
-              [ -z "$DOMAIN" ] || { curl -fsS --max-time 15 "https://$DOMAIN/health" | grep -q UP && echo "HTTPS public UP: https://$DOMAIN/health" || ok=0; }
+              # Gateway vua healthy co the can vai giay; thu toi da 6 lan. Khong dung pipe (tranh SIGPIPE + pipefail).
+              gw=0
+              for t in 1 2 3 4 5 6; do
+                if curl -fsS --max-time 10 -o /tmp/qb_gw.json http://127.0.0.1:8080/actuator/health && grep -q '"status":"UP"' /tmp/qb_gw.json; then gw=1; break; fi
+                sleep 5
+              done
+              if [ "$gw" = 1 ]; then echo "Gateway noi bo UP"; else echo "Gateway noi bo KHONG UP"; ok=0; fi
+
+              DOMAIN=$(grep -E '^DOMAIN=' .env | cut -d= -f2- || true)   # '|| true': thieu DOMAIN khong duoc lam script thoat im lang
+              if [ -n "$DOMAIN" ]; then
+                pub=0
+                for t in 1 2 3 4 5 6; do
+                  if curl -fsS --max-time 15 -o /tmp/qb_pub.json "https://$DOMAIN/health" && grep -q UP /tmp/qb_pub.json; then pub=1; break; fi
+                  sleep 5
+                done
+                if [ "$pub" = 1 ]; then echo "HTTPS public UP: https://$DOMAIN/health"; else echo "HTTPS public KHONG UP: https://$DOMAIN/health"; ok=0; fi
+              else
+                echo "Bo qua kiem tra HTTPS: .env khong co DOMAIN="
+              fi
             fi
 
             if [ "$ok" != 1 ]; then
