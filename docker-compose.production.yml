@@ -37,14 +37,14 @@ services:
     <<: *svc-common
     image: postgres:16-alpine
     container_name: postgres
-    mem_limit: ${MEM_POSTGRES:-160m}
+    mem_limit: ${MEM_POSTGRES:-256m}
     command: >
       postgres
-      -c shared_buffers=${PG_SHARED_BUFFERS:-48MB}
-      -c effective_cache_size=${PG_EFFECTIVE_CACHE:-128MB}
+      -c shared_buffers=${PG_SHARED_BUFFERS:-64MB}
+      -c effective_cache_size=${PG_EFFECTIVE_CACHE:-256MB}
       -c work_mem=2MB
       -c maintenance_work_mem=16MB
-      -c max_connections=${PG_MAX_CONNECTIONS:-60}
+      -c max_connections=${PG_MAX_CONNECTIONS:-100}
       -c wal_compression=on
       -c checkpoint_timeout=15min
       -c log_min_duration_statement=1000
@@ -71,9 +71,9 @@ services:
     <<: *svc-common
     image: redis:7-alpine
     container_name: redis
-    mem_limit: ${MEM_REDIS:-64m}
+    mem_limit: ${MEM_REDIS:-96m}
     # volatile-lru: chi duoc xoa key CO TTL (rate-limit bucket, lock deu co TTL) -> lock khong bi day ra som
-    command: redis-server --maxmemory ${REDIS_MAXMEMORY:-40mb} --maxmemory-policy volatile-lru --save "" --appendonly no
+    command: redis-server --maxmemory ${REDIS_MAXMEMORY:-64mb} --maxmemory-policy volatile-lru --save "" --appendonly no
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -84,7 +84,7 @@ services:
     <<: *svc-common
     image: apache/kafka:3.8.1          # KRaft, khong can ZooKeeper
     container_name: kafka
-    mem_limit: ${MEM_KAFKA:-320m}
+    mem_limit: ${MEM_KAFKA:-384m}
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -106,7 +106,7 @@ services:
       # BAT BUOC tren VPS nho: mac dinh log cleaner xin bo dem dedupe 128MB tren heap -> OutOfMemoryError luc khoi dong
       # (SkimpyOffsetMap) khi heap chi 160-256MB => Kafka restart vo han. 8MB du cho demo (cleaner chi nen __consumer_offsets).
       KAFKA_LOG_CLEANER_DEDUPE_BUFFER_SIZE: 8388608
-      KAFKA_HEAP_OPTS: ${KAFKA_HEAP:--Xms128m -Xmx160m}
+      KAFKA_HEAP_OPTS: ${KAFKA_HEAP:--Xms192m -Xmx256m}
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -122,19 +122,19 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX:?Thieu IMAGE_PREFIX, vd ghcr.io/ten-ban}/identity-user-service:${IMAGE_TAG:-latest}
     container_name: identity-user-service
-    mem_limit: ${MEM_SVC:-150m}
+    mem_limit: ${MEM_SVC:-340m}
     depends_on:
       postgres: {condition: service_healthy}
     environment:
-      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms48m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms64m -Xmx128m -XX:MaxMetaspaceSize=144m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=48m -XX:MaxDirectMemorySize=48m -Xshare:auto -Dspring.jmx.enabled=false}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: identity_user_db
       DB_USERNAME: identity_user
       DB_PASSWORD: ${DB_PASS_IDENTITY_USER}
-      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-5}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-8}
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
-      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-40}
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-60}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?missing}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:?missing}
       ADMIN_DEFAULT_PASSWORD: ${ADMIN_DEFAULT_PASSWORD:?missing}
@@ -147,19 +147,19 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX}/product-catalog-service:${IMAGE_TAG:-latest}
     container_name: product-catalog-service
-    mem_limit: ${MEM_SVC:-150m}
+    mem_limit: ${MEM_SVC:-340m}
     depends_on:
       postgres: {condition: service_healthy}
     environment:
-      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms48m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms64m -Xmx128m -XX:MaxMetaspaceSize=144m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=48m -XX:MaxDirectMemorySize=48m -Xshare:auto -Dspring.jmx.enabled=false}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: product_catalog_db
       DB_USERNAME: product_catalog
       DB_PASSWORD: ${DB_PASS_PRODUCT_CATALOG}
-      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-5}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-8}
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
-      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-40}
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-60}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       PRODUCT_GRPC_PORT: "9091"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -171,7 +171,7 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX}/order-inventory-service:${IMAGE_TAG:-latest}
     container_name: order-inventory-service
-    mem_limit: ${MEM_ORDER:-190m}
+    mem_limit: ${MEM_ORDER:-380m}
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -179,15 +179,15 @@ services:
       identity-user-service: {condition: service_healthy}
       product-catalog-service: {condition: service_healthy}
     environment:
-      JAVA_OPTS: ${JAVA_OPTS_ORDER:--Xms64m -Xmx128m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      JAVA_OPTS: ${JAVA_OPTS_ORDER:--Xms96m -Xmx192m -XX:MaxMetaspaceSize=144m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=48m -XX:MaxDirectMemorySize=48m -Xshare:auto -Dspring.jmx.enabled=false}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: order_inventory_db
       DB_USERNAME: order_inventory
       DB_PASSWORD: ${DB_PASS_ORDER_INVENTORY}
-      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_ORDER:-12}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_ORDER:-16}
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 2
-      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_ORDER:-80}
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_ORDER:-120}
       SERVER_TOMCAT_THREADS_MINSPARE: 10
       SERVER_TOMCAT_ACCEPTCOUNT: 100
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
@@ -209,21 +209,21 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX}/payment-billing-service:${IMAGE_TAG:-latest}
     container_name: payment-billing-service
-    mem_limit: ${MEM_SVC:-150m}
+    mem_limit: ${MEM_SVC:-340m}
     depends_on:
       postgres: {condition: service_healthy}
       kafka: {condition: service_healthy}
       order-inventory-service: {condition: service_healthy}   # tuan tu hoa khoi dong cho 1 vCPU
     environment:
-      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms48m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms64m -Xmx128m -XX:MaxMetaspaceSize=144m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=48m -XX:MaxDirectMemorySize=48m -Xshare:auto -Dspring.jmx.enabled=false}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: payment_billing_db
       DB_USERNAME: payment_billing
       DB_PASSWORD: ${DB_PASS_PAYMENT_BILLING}
-      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-5}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-8}
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
-      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-40}
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-60}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       VNPAY_TMN_CODE: ${VNPAY_TMN_CODE:-}
@@ -240,22 +240,22 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX}/notification-service:${IMAGE_TAG:-latest}
     container_name: notification-service
-    mem_limit: ${MEM_SVC:-150m}
+    mem_limit: ${MEM_SVC:-340m}
     depends_on:
       postgres: {condition: service_healthy}
       kafka: {condition: service_healthy}
       payment-billing-service: {condition: service_healthy}
       identity-user-service: {condition: service_healthy}
     environment:
-      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms48m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms64m -Xmx128m -XX:MaxMetaspaceSize=144m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=48m -XX:MaxDirectMemorySize=48m -Xshare:auto -Dspring.jmx.enabled=false}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: notification_db
       DB_USERNAME: notification
       DB_PASSWORD: ${DB_PASS_NOTIFICATION}
-      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-5}
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_SVC:-8}
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
-      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-40}
+      SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-60}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       IDENTITY_GRPC_HOST: identity-user-service
@@ -278,7 +278,7 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX}/api-gateway:${IMAGE_TAG:-latest}
     container_name: api-gateway
-    mem_limit: ${MEM_SVC:-150m}
+    mem_limit: ${MEM_SVC:-340m}
     depends_on:
       redis: {condition: service_healthy}
       identity-user-service: {condition: service_healthy}
@@ -291,7 +291,7 @@ services:
       # CHI bind loopback: Nginx (host) la cua ngo duy nhat ra Internet. Docker bo qua UFW neu bind 0.0.0.0.
       - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
     environment:
-      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms48m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=40m -XX:MaxDirectMemorySize=32m -XX:CompressedClassSpaceSize=48m -Xshare:auto -Dspring.jmx.enabled=false}
+      JAVA_OPTS: ${JAVA_OPTS_SVC:--Xms64m -Xmx128m -XX:MaxMetaspaceSize=144m -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError -XX:ReservedCodeCacheSize=48m -XX:MaxDirectMemorySize=48m -Xshare:auto -Dspring.jmx.enabled=false}
       SERVER_PORT: "8080"
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       REDIS_HOST: redis
