@@ -6,6 +6,9 @@ set -uo pipefail
 : "${DOMAIN:?}"; : "${ADMIN_PASSWORD:?}"; B="https://$DOMAIN"; R=$RANDOM$RANDOM
 j(){ curl -sS -m 30 -H 'Content-Type: application/json' "$@"; }
 step(){ echo; echo "== $* =="; }; chk(){ [ -n "$2" ] && [ "$2" != null ] && echo "  [OK] $1: $2" || { echo "  [LOI] $1"; exit 1; }; }
+chkpos(){ if [[ "$2" =~ ^[0-9]+$ ]] && [ "$2" -gt 0 ]; then echo "  [OK] $1: $2"; else echo "  [LOI] $1: nhan duoc '$2' (can so > 0)"; [ -n "${3:-}" ] && echo "  response cuoi: $3"; exit 1; fi; }
+waitlogs(){ # $1=orderId  -> dat WL_N (so log) va LAST_LOG_RESP, toi da 120s; WL_N rong neu API loi
+  local r n; for i in $(seq 1 40); do r=$(j "$B/api/notifications/logs?orderId=$1&page=0&size=10" -H "Authorization: Bearer $AT"); n=$(echo "$r" | jq -r '.data.totalElements // empty' 2>/dev/null); [ -n "$n" ] && [ "$n" != 0 ] && break; sleep 3; done; LAST_LOG_RESP="$r"; WL_N="${n:-}"; }
 step "Health (qua Nginx)";            curl -fsS -m 10 "$B/health"; echo
 step "Nginx chan actuator/docs";      echo "  /actuator/health -> $(curl -s -o /dev/null -w '%{http_code}' $B/actuator/health) (mong doi 404)"
 AT=$(j -X POST $B/api/users/login -d "{\"username\":\"admin\",\"password\":\"$ADMIN_PASSWORD\"}" | jq -r .data.accessToken); chk "login admin" "$AT"
@@ -23,11 +26,13 @@ order(){ j -X POST $B/api/orders -H "Authorization: Bearer $CT" -d "{\"idempoten
 step "Dat hang #1"; O=$(order); echo "  response: $O"; OID=$(echo "$O"|jq -r .data.id); chk "orderId (khong null)" "$OID"; echo "  status=$(echo "$O"|jq -r .data.status)"
 step "Cho Outbox -> Kafka -> Payment (toi da 60s)"
 for i in $(seq 1 20); do PR=$(j $B/api/payments/order/$OID -H "Authorization: Bearer $CT"); P=$(echo "$PR" | jq -r .data.status); [ "$P" != null ] && [ -n "$P" ] && break; sleep 3; done; echo "  response cuoi: $PR"; chk "payment status (Kafka order.created OK)" "$P"
-step "Notification da ghi log cho don hang"
-for i in $(seq 1 20); do N=$(j "$B/api/notifications/logs?orderId=$OID&page=0&size=5" -H "Authorization: Bearer $AT" | jq -r '.data.totalElements // .data.content|length'); [ "${N:-0}" != 0 ] && [ "$N" != null ] && break; sleep 3; done; chk "so notification log" "$N"
+step "Notification da ghi log cho don hang (cho toi da 120s)"
+waitlogs "$OID"; N="$WL_N"; chkpos "so notification log cua don $OID (mong doi 3: EMAIL+SMS+PUSH)" "$N" "$LAST_LOG_RESP"
 step "Kich ban de bai: TAT notification-service -> van dat duoc hang"
 ( cd /opt/quickbite 2>/dev/null && docker compose stop notification-service ) || echo "  (chay tren VPS de tu tat; neu khong hay tu tat roi chay tiep)"
 O2=$(order); echo "  response: $O2"; chk "dat hang khi Notification tat" "$(echo "$O2"|jq -r .data.id)"
 ( cd /opt/quickbite 2>/dev/null && docker compose start notification-service )
+step "Bat lai Notification -> event ton dong cua don $(echo "$O2"|jq -r .data.id) duoc xu ly (cho toi da 120s)"
+O2ID=$(echo "$O2"|jq -r .data.id); waitlogs "$O2ID"; N2="$WL_N"; chkpos "so notification log cua don $O2ID sau khi bat lai" "$N2" "$LAST_LOG_RESP"
 step "Ton kho: available + reserved phai = 5 - don da dat"; j $B/api/inventory/$SKU -H "Authorization: Bearer $AT" | jq -c '.data|{availableQty,reservedQty}'
 echo; echo "=> SMOKE TEST XONG"
