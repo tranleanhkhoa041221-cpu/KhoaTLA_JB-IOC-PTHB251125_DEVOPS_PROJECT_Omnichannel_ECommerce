@@ -4,7 +4,7 @@
 # 2) docker compose -f docker-compose.production.yml -f monitoring/docker-compose.monitoring.yml -f monitoring/docker-compose.tracing.yml --profile full up -d
 # 3) Xem trace: ssh -L 16686:127.0.0.1:16686 root@VPS  -> http://localhost:16686 (chọn service, Find Traces)
 x-otel: &otel
-  mem_limit: ${MEM_SVC_TRACING:-320m}
+  mem_limit: ${MEM_SVC_TRACING:-480m}
   volumes: [ "./otel:/otel:ro" ]
   environment: &otel-env
     JAVA_TOOL_OPTIONS: "-javaagent:/otel/opentelemetry-javaagent.jar"
