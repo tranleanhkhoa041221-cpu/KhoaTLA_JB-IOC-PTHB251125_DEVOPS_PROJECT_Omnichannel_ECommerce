@@ -17,3 +17,7 @@ otel/
 backups/
 *.zip
 *.dump
+/settings.gradle
+/gradlew
+/gradlew.bat
+/gradle/
