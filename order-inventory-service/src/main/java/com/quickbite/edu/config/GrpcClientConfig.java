@@ -20,13 +20,17 @@ public class GrpcClientConfig {
     @Bean(destroyMethod = "shutdown")
     public ManagedChannel productChannel(@Value("${PRODUCT_GRPC_HOST:localhost}") String host,
                                          @Value("${PRODUCT_GRPC_PORT:9091}") int port) {
-        return ManagedChannelBuilder.forAddress(host, port).usePlaintext().build();
+        ManagedChannel channel = ManagedChannelBuilder.forAddress(host, port).usePlaintext().build();
+        channel.getState(true); // chu dong mo ket noi ngay luc khoi dong -> cuoc goi gRPC dau tien khong phai cho handshake (khoi bi timeout 3s)
+        return channel;
     }
 
     @Bean(destroyMethod = "shutdown")
     public ManagedChannel identityChannel(@Value("${IDENTITY_GRPC_HOST:localhost}") String host,
                                           @Value("${IDENTITY_GRPC_PORT:9090}") int port) {
-        return ManagedChannelBuilder.forAddress(host, port).usePlaintext().build();
+        ManagedChannel channel = ManagedChannelBuilder.forAddress(host, port).usePlaintext().build();
+        channel.getState(true); // chu dong mo ket noi ngay luc khoi dong -> cuoc goi gRPC dau tien khong phai cho handshake (khoi bi timeout 3s)
+        return channel;
     }
 
     @Bean

@@ -94,6 +94,15 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error("Endpoint khong ton tai: " + ex.getResourcePath(), null));
     }
 
+    /** Loi tu dich vu phia sau (gRPC Identity/Product cham hoac khong ket noi duoc): loi phia SERVER, khong phai loi cua client. */
+    @ExceptionHandler(DownstreamServiceException.class)
+    public ResponseEntity<ApiResponse<?>> handleDownstream(DownstreamServiceException ex) {
+        log.warn("Dich vu phia sau loi ({}): {}", ex.getStatus().value(), ex.getMessage());
+        return ResponseEntity.status(ex.getStatus())
+                .header("Retry-After", "2")
+                .body(ApiResponse.error(ex.getMessage(), null));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<?>> handleException(Exception ex) {
         log.error("Loi khong xac dinh", ex);

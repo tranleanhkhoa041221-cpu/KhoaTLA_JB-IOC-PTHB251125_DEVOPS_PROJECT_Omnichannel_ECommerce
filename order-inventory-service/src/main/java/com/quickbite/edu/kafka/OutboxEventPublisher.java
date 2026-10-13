@@ -15,10 +15,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.core.task.support.ContextPropagatingTaskDecorator;
 
 /**
  * Outbox Pattern - buoc 2: scheduled job quet cac ban ghi PENDING trong outbox_events va publish len Kafka.
@@ -47,7 +48,12 @@ public class OutboxEventPublisher {
 
     private final OutboxEventRepository outboxEventRepository;
     private final OutboxDispatchOps outboxDispatchOps;
-    private final ExecutorService dispatchExecutor = Executors.newFixedThreadPool(DISPATCH_CONCURRENCY);
+    /**
+     * Dung ThreadPoolTaskExecutor + ContextPropagatingTaskDecorator thay vi Executors.newFixedThreadPool
+     * de OTEL Java Agent co the truyen trace context (ThreadLocal) sang cac worker thread.
+     * Nho vay span Kafka.send() trong dispatchOne() se duoc gan vao dung parent span cua Scheduled job.
+     */
+    private final ExecutorService dispatchExecutor = buildContextAwareExecutor();
 
     /** Thoi diem (epoch ms) cho toi khi breaker cho phep thu lai. */
     private volatile long pausedUntilMillis = 0L;
@@ -143,5 +149,22 @@ public class OutboxEventPublisher {
             dispatchExecutor.shutdownNow();
             Thread.currentThread().interrupt();
         }
+    }
+
+    /**
+     * Tao ExecutorService co kha nang truyen ThreadLocal context (OTEL trace, MDC...) sang worker thread.
+     * ContextPropagatingTaskDecorator (Spring 6.1+) wrap moi Runnable:
+     *   1. Chup thread context hien tai (ThreadLocal, OTEL Baggage...)
+     *   2. Phuc hoi context do truoc khi chay task tren worker thread
+     *   3. Kho phuc trang thai goc sau khi task hoan thanh
+     */
+    private static ExecutorService buildContextAwareExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(DISPATCH_CONCURRENCY);
+        executor.setMaxPoolSize(DISPATCH_CONCURRENCY);
+        executor.setThreadNamePrefix("outbox-dispatch-");
+        executor.setTaskDecorator(new ContextPropagatingTaskDecorator());
+        executor.initialize();
+        return executor.getThreadPoolExecutor();
     }
 }

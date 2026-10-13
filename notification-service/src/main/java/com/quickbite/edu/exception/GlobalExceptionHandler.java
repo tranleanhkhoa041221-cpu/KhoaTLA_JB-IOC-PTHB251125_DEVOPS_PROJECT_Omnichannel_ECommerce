@@ -75,6 +75,15 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(ex.getMessage(), null));
     }
 
+    /** Loi tu dich vu phia sau (gRPC Identity cham hoac khong ket noi duoc): loi phia SERVER, khong phai loi cua client. */
+    @ExceptionHandler(DownstreamServiceException.class)
+    public ResponseEntity<ApiResponse<?>> handleDownstream(DownstreamServiceException ex) {
+        log.warn("Dich vu phia sau loi ({}): {}", ex.getStatus().value(), ex.getMessage());
+        return ResponseEntity.status(ex.getStatus())
+                .header("Retry-After", "2")
+                .body(ApiResponse.error(ex.getMessage(), null));
+    }
+
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<?>> handleDataIntegrity(DataIntegrityViolationException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)

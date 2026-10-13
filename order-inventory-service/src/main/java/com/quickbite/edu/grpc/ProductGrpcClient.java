@@ -2,10 +2,13 @@ package com.quickbite.edu.grpc;
 
 import com.quickbite.edu.dto.ProductStockInfo;
 import com.quickbite.edu.exception.BadRequestException;
+import com.quickbite.edu.exception.DownstreamServiceException;
 import com.quickbite.edu.exception.NotFoundException;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -31,6 +34,8 @@ public class ProductGrpcClient {
      * cho client ro rang (409/400) thay vi client tu timeout vo thoi han phia Gateway/trinh duyet.
      */
     private static final long DEADLINE_SECONDS = 3;
+    /** Lan thu lai (chi cho loi tam thoi): kiem tra gia/ton kho la thao tac doc, idempotent. */
+    private static final long RETRY_DEADLINE_SECONDS = 5;
 
     private final ProductServiceGrpc.ProductServiceBlockingStub productServiceBlockingStub;
 
@@ -41,9 +46,7 @@ public class ProductGrpcClient {
                     .setQuantity(quantity)
                     .build();
 
-            CheckStockResponse response = productServiceBlockingStub
-                    .withDeadlineAfter(DEADLINE_SECONDS, TimeUnit.SECONDS)
-                    .checkStockAndPrice(request);
+            CheckStockResponse response = checkStockWithRetry(request);
 
             return ProductStockInfo.builder()
                     .available(response.getAvailable())
@@ -56,10 +59,30 @@ public class ProductGrpcClient {
             switch (ex.getStatus().getCode()) {
                 case NOT_FOUND -> throw new NotFoundException("Khong tim thay san pham SKU [" + sku + "] tren Product Catalog Service");
                 case INVALID_ARGUMENT -> throw new BadRequestException(ex.getStatus().getDescription());
-                case DEADLINE_EXCEEDED -> throw new BadRequestException(
-                        "Product Catalog Service phan hoi qua cham (qua " + DEADLINE_SECONDS + "s), vui long thu lai");
-                default -> throw new BadRequestException("Khong the ket noi den Product Catalog Service: " + ex.getStatus().getDescription());
+                // Loi phia SERVER (Product cham/khong ket noi duoc) -> 5xx, KHONG phai 400.
+                case DEADLINE_EXCEEDED -> throw new DownstreamServiceException(HttpStatus.GATEWAY_TIMEOUT,
+                        "Product Catalog Service phan hoi qua cham, vui long thu lai sau vai giay");
+                default -> throw new DownstreamServiceException(HttpStatus.SERVICE_UNAVAILABLE,
+                        "Product Catalog Service tam thoi khong kha dung, vui long thu lai sau");
             }
+        }
+    }
+
+    /** Deadline 3s; timeout/mat ket noi thi thu lai DUNG 1 LAN voi deadline 5s truoc khi bao loi. */
+    private CheckStockResponse checkStockWithRetry(CheckStockRequest request) {
+        try {
+            return productServiceBlockingStub
+                    .withDeadlineAfter(DEADLINE_SECONDS, TimeUnit.SECONDS)
+                    .checkStockAndPrice(request);
+        } catch (StatusRuntimeException ex) {
+            Status.Code code = ex.getStatus().getCode();
+            if (code == Status.Code.DEADLINE_EXCEEDED || code == Status.Code.UNAVAILABLE) {
+                log.warn("gRPC checkStockAndPrice {} - thu lai 1 lan voi deadline {}s", code, RETRY_DEADLINE_SECONDS);
+                return productServiceBlockingStub
+                        .withDeadlineAfter(RETRY_DEADLINE_SECONDS, TimeUnit.SECONDS)
+                        .checkStockAndPrice(request);
+            }
+            throw ex;
         }
     }
 }
