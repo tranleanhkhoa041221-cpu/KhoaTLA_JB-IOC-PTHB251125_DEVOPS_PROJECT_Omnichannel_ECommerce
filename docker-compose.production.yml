@@ -122,6 +122,9 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX:?Thieu IMAGE_PREFIX, vd ghcr.io/ten-ban}/identity-user-service:${IMAGE_TAG:-latest}
     container_name: identity-user-service
+    ports:
+      # Chi loopback (SSH tunnel de mo Swagger UI). KHONG mo ra Internet; Docker bind 127.0.0.1 nen UFW/Nginx khong lien quan.
+      - "127.0.0.1:8082:8082"
     mem_limit: ${MEM_SVC:-340m}
     depends_on:
       postgres: {condition: service_healthy}
@@ -138,6 +141,8 @@ services:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?missing}
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:?missing}
       ADMIN_DEFAULT_PASSWORD: ${ADMIN_DEFAULT_PASSWORD:?missing}
+      # Swagger server URL – Swagger UI dung URL nay lam base (giong Postman baseUrl)
+      GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     healthcheck:
       <<: *svc-health-defaults
@@ -147,6 +152,9 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX}/product-catalog-service:${IMAGE_TAG:-latest}
     container_name: product-catalog-service
+    ports:
+      # Chi loopback (SSH tunnel de mo Swagger UI). KHONG mo ra Internet; Docker bind 127.0.0.1 nen UFW/Nginx khong lien quan.
+      - "127.0.0.1:8083:8083"
     mem_limit: ${MEM_SVC:-340m}
     depends_on:
       postgres: {condition: service_healthy}
@@ -162,6 +170,7 @@ services:
       SERVER_TOMCAT_THREADS_MAX: ${TOMCAT_SVC:-60}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY}
       PRODUCT_GRPC_PORT: "9091"
+      GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     healthcheck:
       <<: *svc-health-defaults
@@ -171,6 +180,9 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX}/order-inventory-service:${IMAGE_TAG:-latest}
     container_name: order-inventory-service
+    ports:
+      # Chi loopback (SSH tunnel de mo Swagger UI). KHONG mo ra Internet; Docker bind 127.0.0.1 nen UFW/Nginx khong lien quan.
+      - "127.0.0.1:8084:8084"
     mem_limit: ${MEM_ORDER:-380m}
     depends_on:
       postgres: {condition: service_healthy}
@@ -200,6 +212,7 @@ services:
       IDENTITY_GRPC_PORT: "9090"
       # false = reserve kho bang atomic UPDATE (nhanh, hop 1 vCPU). true = bat Redis Distributed Lock de demo.
       APP_INVENTORY_USE_REDIS_LOCK: ${USE_REDIS_LOCK:-true}
+      GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     healthcheck:
       <<: *svc-health-defaults
@@ -209,6 +222,9 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX}/payment-billing-service:${IMAGE_TAG:-latest}
     container_name: payment-billing-service
+    ports:
+      # Chi loopback (SSH tunnel de mo Swagger UI). KHONG mo ra Internet; Docker bind 127.0.0.1 nen UFW/Nginx khong lien quan.
+      - "127.0.0.1:8085:8085"
     mem_limit: ${MEM_SVC:-340m}
     depends_on:
       postgres: {condition: service_healthy}
@@ -231,6 +247,7 @@ services:
       VNPAY_RETURN_URL: ${VNPAY_RETURN_URL:-}
       VNPAY_IPN_URL: ${VNPAY_IPN_URL:-}
       VNPAY_IPN_ALLOWED_IPS: ${VNPAY_IPN_ALLOWED_IPS:-}
+      GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     healthcheck:
       <<: *svc-health-defaults
@@ -240,6 +257,9 @@ services:
     <<: *svc-common
     image: ${IMAGE_PREFIX}/notification-service:${IMAGE_TAG:-latest}
     container_name: notification-service
+    ports:
+      # Chi loopback (SSH tunnel de mo Swagger UI). KHONG mo ra Internet; Docker bind 127.0.0.1 nen UFW/Nginx khong lien quan.
+      - "127.0.0.1:8086:8086"
     mem_limit: ${MEM_SVC:-340m}
     depends_on:
       postgres: {condition: service_healthy}
@@ -269,6 +289,7 @@ services:
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
       TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      GATEWAY_BASE_URL: ${GATEWAY_BASE_URL:-http://localhost:8080}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     healthcheck:
       <<: *svc-health-defaults

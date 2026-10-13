@@ -46,7 +46,10 @@ public class SecurityConfig {
                                 "/api/users/refresh-token",
                                 "/api/users/validate-token",
                                 "/api/internal/**",
-                                "/actuator/**"
+                                "/actuator/**",
+                                "/v3/api-docs/**",
+                                "/swagger-ui/**",
+                                "/swagger-ui.html"
                         ).permitAll()
                         .anyRequest().authenticated()
                 )
