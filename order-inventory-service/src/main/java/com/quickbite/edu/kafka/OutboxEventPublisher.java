@@ -9,64 +9,127 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Outbox Pattern - buoc 2: scheduled job quet cac ban ghi PENDING trong bang outbox_events
- * (da duoc ghi ATOMIC cung transaction voi Order o buoc 1) va giao tung event cho
- * OutboxDispatchOps xu ly rieng le (xem OutboxDispatchOps de biet ly do tach transaction).
+ * Outbox Pattern - buoc 2: scheduled job quet cac ban ghi PENDING trong outbox_events va publish len Kafka.
  *
- * An toan khi chay NHIEU INSTANCE song song (horizontal scaling): method nay chi SELECT thong
- * thuong (khong lock) de lay danh sach UNG VIEN, viec "claim" that su (tranh 2 instance cung
- * publish 1 event) dien ra o buoc sau trong OutboxDispatchOps.dispatchOne() bang row-lock
- * PESSIMISTIC_WRITE. Neu Kafka Broker down, event van nam trong DB (status=PENDING) va se
- * duoc thu lai o lan quet tiep theo - KHONG BAO GIO MAT EVENT.
+ * DAM BAO "KHONG MAT EVENT" KHI KAFKA DOWN (ke ca rat lau):
+ *  - Event loi tam thoi LUON o lai PENDING (xem OutboxDispatchOps), khong bao gio tu chuyen FAILED.
+ *  - CIRCUIT BREAKER + BACKOFF: khi 1 lan dispatch gap loi tam thoi, job tam dung theo backoff luy tien
+ *    (1s, 2s, 4s ... toi da 30s). Khi het thoi gian cho, chi gui THAM DO 1 event; thanh cong thi dong
+ *    breaker va xa het backlog. Nho vay luc Kafka down khong co 8 thread cung giu ket noi DB + row-lock
+ *    de cho Kafka (lam can pool, anh huong tao don hang).
+ *  - THU TU THEO AGGREGATE: cac event cung aggregateId (vd order.created roi order.cancelled cua cung 1 don)
+ *    duoc gui TUAN TU theo id, dung lai o event loi dau tien; cac aggregate khac van chay SONG SONG.
+ *  - Event hong vinh vien (payload rac...) bi chuyen FAILED ngay va khong chan cac event khac.
  *
- * PERFORMANCE/SCALABILITY (sua ngay 2026-10): truoc day moi tick CHI xu ly 50 event mot cach
- * TUAN TU (for loop goi dispatchOne() lan luot, moi lan cho .get() cua Kafka send xong moi sang
- * event ke tiep) - gioi han cung throughput toi da cua toan bo outbox publisher o muc ~50
- * event/giay, THAP HON NHIEU so voi muc tieu Flash Sale 500-1000 req/s cua de bai, khien
- * outbox_events bi don (backlog) tang khong gioi han trong luc tai cao. Sua bang 2 thay doi:
- *  1) Tang gioi han lay ung vien moi tick tu Top50 -> Top200 (OutboxEventRepository).
- *  2) Dispatch SONG SONG nhieu event trong CUNG 1 tick qua 1 ExecutorService co gioi han
- *     (bounded) thay vi vong for tuan tu - an toan vi dispatchOne() da la 1 transaction
- *     REQUIRES_NEW doc lap + row-lock PESSIMISTIC_WRITE cho tung event rieng biet (khong
- *     event nao tranh chap lock voi event khac), nen co the chay dong thoi ma khong vi pham
- *     tinh dung dan cua Outbox/idempotency.
+ * An toan khi chay NHIEU INSTANCE: job chi SELECT danh sach ung vien; viec claim that su la row-lock
+ * PESSIMISTIC_WRITE trong OutboxDispatchOps.dispatchOne().
  */
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class OutboxEventPublisher {
 
-    /** Gioi han so thread dispatch dong thoi - can bang voi so ket noi DB con lai trong
-     *  HikariCP pool (xem application.yml) de tranh outbox publisher chiem het pool khien
-     *  cac request nghiep vu khac (tao don hang) bi cho connection. */
     private static final int DISPATCH_CONCURRENCY = 8;
+    private static final long BACKOFF_BASE_MS = 1_000L;
+    private static final long BACKOFF_MAX_MS = 30_000L;
 
     private final OutboxEventRepository outboxEventRepository;
     private final OutboxDispatchOps outboxDispatchOps;
     private final ExecutorService dispatchExecutor = Executors.newFixedThreadPool(DISPATCH_CONCURRENCY);
 
+    /** Thoi diem (epoch ms) cho toi khi breaker cho phep thu lai. */
+    private volatile long pausedUntilMillis = 0L;
+    /** So tick lien tiep gap loi tam thoi (0 = Kafka binh thuong). */
+    private final AtomicInteger consecutiveFailedTicks = new AtomicInteger(0);
+    private volatile boolean legacyRequeueDone = false;
+
     @Scheduled(fixedDelay = 1000)
     public void publishPendingEvents() {
+        if (!legacyRequeueDone) {
+            requeueLegacyFailedOnce();
+        }
+        if (System.currentTimeMillis() < pausedUntilMillis) {
+            return; // breaker dang mo: cho het backoff
+        }
+
         List<OutboxEvent> candidates = outboxEventRepository.findTop200ByStatusOrderByIdAsc(OutboxStatus.PENDING);
         if (candidates.isEmpty()) {
             return;
         }
+        // Half-open: sau loi chi gui THAM DO 1 event de khong lam nghen DB khi Kafka van con down.
+        if (consecutiveFailedTicks.get() > 0) {
+            candidates = candidates.subList(0, 1);
+        }
 
-        List<CompletableFuture<Void>> futures = candidates.stream()
-                .map(candidate -> CompletableFuture.runAsync(
-                        () -> outboxDispatchOps.dispatchOne(candidate.getId()), dispatchExecutor))
+        Map<String, List<Long>> idsByAggregate = new LinkedHashMap<>();
+        for (OutboxEvent candidate : candidates) {
+            idsByAggregate.computeIfAbsent(candidate.getAggregateId(), k -> new ArrayList<>()).add(candidate.getId());
+        }
+
+        AtomicBoolean transientFailure = new AtomicBoolean(false);
+        AtomicBoolean anyPublished = new AtomicBoolean(false);
+
+        List<CompletableFuture<Void>> futures = idsByAggregate.values().stream()
+                .map(ids -> CompletableFuture.runAsync(() -> dispatchGroup(ids, transientFailure, anyPublished), dispatchExecutor))
                 .toList();
 
-        // Cho tat ca event trong tick nay xu ly xong truoc khi @Scheduled tick ke tiep bat dau,
-        // tranh 2 tick chong lan nhau cung xu ly 1 batch.
+        // Cho tat ca nhom trong tick xong truoc khi tick ke tiep bat dau (tranh 2 tick chong lan).
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        if (transientFailure.get()) {
+            int failedTicks = consecutiveFailedTicks.incrementAndGet();
+            long backoff = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS << Math.min(failedTicks - 1, 5));
+            pausedUntilMillis = System.currentTimeMillis() + backoff;
+            log.warn("Outbox: Kafka loi tam thoi (lan {} lien tiep) - tam dung {} ms, cac event van o PENDING, se tu gui lai khi Kafka phuc hoi",
+                    failedTicks, backoff);
+        } else if (anyPublished.get() && consecutiveFailedTicks.getAndSet(0) > 0) {
+            log.info("Outbox: Kafka da phuc hoi - tiep tuc gui backlog PENDING");
+        }
+    }
+
+    private void dispatchGroup(List<Long> ids, AtomicBoolean transientFailure, AtomicBoolean anyPublished) {
+        for (Long id : ids) {
+            OutboxDispatchResult result;
+            try {
+                result = outboxDispatchOps.dispatchOne(id);
+            } catch (Exception ex) {
+                // Loi ha tang (DB, pool...) - coi nhu tam thoi, event van PENDING.
+                log.warn("Outbox: dispatch event id={} gap loi ha tang: {}", id, ex.toString());
+                transientFailure.set(true);
+                return;
+            }
+            if (result == OutboxDispatchResult.TRANSIENT_FAILURE) {
+                transientFailure.set(true);
+                return; // giu thu tu: khong gui event sau cua cung aggregate
+            }
+            if (result == OutboxDispatchResult.PUBLISHED) {
+                anyPublished.set(true);
+            }
+        }
+    }
+
+    private void requeueLegacyFailedOnce() {
+        try {
+            int n = outboxDispatchOps.requeueLegacyFailed();
+            legacyRequeueDone = true;
+            if (n > 0) {
+                log.warn("Outbox: da dua {} event FAILED (do co che retry cu) ve PENDING de gui lai", n);
+            }
+        } catch (Exception ex) {
+            log.warn("Outbox: chua requeue duoc event FAILED cu (se thu lai o tick sau): {}", ex.toString());
+        }
     }
 
     @PreDestroy

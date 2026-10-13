@@ -40,6 +40,12 @@ spring:
       acks: all
       retries: 3
       properties:
+        # Fail-fast khi Kafka down: KHONG de producer.send() chan toi 60s (max.block.ms mac dinh) giu thread + ket noi DB.
+        # delivery.timeout.ms (10s) >= request.timeout.ms (5s) + linger.ms (0) theo yeu cau cua Kafka;
+        # OutboxDispatchOps.get(15s) > delivery.timeout.ms nen future luon hoan tat truoc khi get() het han.
+        max.block.ms: 3000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
         # Thieu dong nay truoc do: khi producer tu dong retry (retries=3) sau 1 loi mang, co the
         # gui TRUNG message neu broker thuc ra DA nhan duoc lan gui dau tien nhung ack bi that lac
         # tren duong ve. idempotence=true buoc Kafka broker tu loai trung o muc protocol (dua tren
