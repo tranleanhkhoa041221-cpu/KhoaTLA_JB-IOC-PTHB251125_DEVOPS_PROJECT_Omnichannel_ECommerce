@@ -36,7 +36,8 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
      * Tim cac don PENDING da ton tai qua ngưỡng thoi gian (dung cho Saga Compensation Cron).
      * Don PENDING qua lau = thanh toan chua hoan tat hoac service crash giua chung.
      */
-    @Query("SELECT o FROM Order o WHERE o.status = 'PENDING' AND o.createdAt < :threshold")
+    // LEFT JOIN FETCH o.items: SagaCompensationJob chay NGOAI transaction/session, neu items (LAZY) khong duoc
+    // nap san thi order.getItems() nem LazyInitializationException SAU KHI don da bi huy -> khong tra duoc kho.
+    @Query("SELECT DISTINCT o FROM Order o LEFT JOIN FETCH o.items WHERE o.status = 'PENDING' AND o.createdAt < :threshold")
     List<Order> findStalePendingOrders(@Param("threshold") LocalDateTime threshold);
 }
-
