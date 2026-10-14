@@ -52,12 +52,12 @@ public class TwilioSmsSender implements SmsSender {
         if (properties.isSmsEnabled() && initialized) {
             try {
                 String to = normalizeToE164(phoneNumber);
-                Message whatsapp = Message.creator(
-                        new PhoneNumber("whatsapp:" + to),
-                        new PhoneNumber(formatWhatsAppNumber(properties.getTwilioFromNumber())),
+                Message sms = Message.creator(
+                        new PhoneNumber(to),
+                        new PhoneNumber(properties.getTwilioFromNumber()),
                         message
                 ).create();
-                log.info("[WHATSAPP-TWILIO] Da gui toi {} | sid={} | status={}", to, whatsapp.getSid(), whatsapp.getStatus());
+                log.info("[SMS-TWILIO] Da gui toi {} | sid={} | status={}", to, sms.getSid(), sms.getStatus());
                 return;
             } catch (Exception ex) {
                 // KHONG nuot loi: nem len de dispatch() o NotificationServiceImpl ghi nhan
@@ -65,7 +65,7 @@ public class TwilioSmsSender implements SmsSender {
                 throw new IllegalStateException("Gui SMS qua Twilio that bai: " + ex.getMessage(), ex);
             }
         }
-        log.info("[WHATSAPP-DEV] phone={} | message={}", phoneNumber, message);
+        log.info("[SMS-DEV] phone={} | message={}", phoneNumber, message);
     }
 
     /**
@@ -88,21 +88,6 @@ public class TwilioSmsSender implements SmsSender {
             return "+" + digits;
         }
         return "+" + digits;
-    }
-
-    private String formatWhatsAppNumber(String e164Number) {
-        if (e164Number == null || e164Number.isBlank()) {
-            throw new IllegalArgumentException("Twilio From number is missing");
-        }
-        String trimmed = e164Number.trim();
-        if (trimmed.startsWith("whatsapp:")) {
-            return trimmed;
-        }
-        // If user provided a raw number, ensure it's E.164
-        if (!trimmed.startsWith("+")) {
-            trimmed = normalizeToE164(trimmed);
-        }
-        return "whatsapp:" + trimmed;
     }
 
     private boolean isBlank(String value) {
