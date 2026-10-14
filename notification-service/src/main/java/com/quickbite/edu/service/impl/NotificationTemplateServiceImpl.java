@@ -3,6 +3,7 @@ package com.quickbite.edu.service.impl;
 import com.quickbite.edu.event.OrderCancelledEvent;
 import com.quickbite.edu.event.OrderCreatedEvent;
 import com.quickbite.edu.event.OrderItemEvent;
+import com.quickbite.edu.event.PaymentRefundedEvent;
 import com.quickbite.edu.event.PaymentResultEvent;
 import com.quickbite.edu.service.interfaces.NotificationTemplateService;
 import org.springframework.stereotype.Service;
@@ -146,6 +147,39 @@ public class NotificationTemplateServiceImpl implements NotificationTemplateServ
     @Override
     public String paymentFailedPushBody(PaymentResultEvent event) {
         return "Don " + event.getOrderCode() + " thanh toan khong thanh cong, don da bi huy.";
+    }
+
+    @Override
+    public String paymentRefundedEmailSubject(PaymentRefundedEvent event) {
+        return "Hoan tien don hang " + event.getOrderCode();
+    }
+
+    @Override
+    public String paymentRefundedEmailBody(PaymentRefundedEvent event) {
+        return """
+                Don %s da duoc hoan tien.
+                So tien hoan lan nay: %s VND
+                Tong da hoan: %s / %s VND (%s)
+                Ly do: %s
+                Tien se ve tai khoan/the cua ban theo thoi gian xu ly cua ngan hang.
+                """.formatted(event.getOrderCode(), event.getRefundAmount(), event.getTotalRefundedAmount(),
+                event.getPaymentAmount(), event.isFullyRefunded() ? "hoan toan bo" : "hoan mot phan",
+                event.getReason());
+    }
+
+    @Override
+    public String paymentRefundedSms(PaymentRefundedEvent event) {
+        return "QuickBite: don " + event.getOrderCode() + " da hoan " + event.getRefundAmount() + " VND.";
+    }
+
+    @Override
+    public String paymentRefundedPushTitle() {
+        return "Hoan tien thanh cong";
+    }
+
+    @Override
+    public String paymentRefundedPushBody(PaymentRefundedEvent event) {
+        return "Don " + event.getOrderCode() + " da duoc hoan " + event.getRefundAmount() + " VND.";
     }
 
     private String formatItem(OrderItemEvent item) {

@@ -256,6 +256,28 @@ public class OrderServiceImpl implements OrderService {
         log.info("Da huy don hang orderCode={} do thanh toan that bai: {}", order.getOrderCode(), reason);
     }
 
+    @Override
+    public void applyRefund(Long orderId, boolean fullyRefunded, java.math.BigDecimal totalRefundedAmount) {
+        Order order = findOrderWithItems(orderId);
+        OrderStatus current = order.getStatus();
+        OrderStatus target = fullyRefunded ? OrderStatus.REFUNDED : OrderStatus.PARTIALLY_REFUNDED;
+
+        boolean refundable = current == OrderStatus.CONFIRMED || current == OrderStatus.SHIPPING
+                || current == OrderStatus.COMPLETED || current == OrderStatus.PARTIALLY_REFUNDED;
+        if (!refundable || current == target) {
+            // PENDING/CANCELLED: khong co khoan thanh toan hop le de hoan o trang thai nay (ghi log, khong doi).
+            // REFUNDED / trung target: event trung (Kafka at-least-once) -> idempotent, bo qua.
+            log.warn("Bo qua payment.refunded cho orderId={} (trang thai hien tai={}, target={})", orderId, current, target);
+            return;
+        }
+
+        order.setStatus(target);
+        // KHONG nuot ObjectOptimisticLockingFailureException: de exception noi ra ngoai cho Spring Kafka retry
+        // (nuot loi = mat event hoan tien, don mai o CONFIRMED trong khi tien da hoan).
+        orderPersistenceOps.updateStatusAndFlush(order);
+        log.info("Don hang orderCode={} chuyen {} -> {} (tong da hoan={})", order.getOrderCode(), current, target, totalRefundedAmount);
+    }
+
     private void assertCancellable(Order order) {
         if (order.getStatus() != OrderStatus.PENDING && order.getStatus() != OrderStatus.CONFIRMED) {
             throw new BadRequestException("Khong the huy don hang o trang thai " + order.getStatus());

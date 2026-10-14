@@ -1,5 +1,6 @@
 package com.quickbite.edu.kafka;
 
+import com.quickbite.edu.event.PaymentRefundedEvent;
 import com.quickbite.edu.event.PaymentResultEvent;
 import com.quickbite.edu.service.interfaces.NotificationService;
 import lombok.RequiredArgsConstructor;
@@ -33,5 +34,12 @@ public class PaymentEventConsumer {
         PaymentResultEvent event = objectMapper.readValue(message, PaymentResultEvent.class);
         log.info("Notification nhan payment.failed orderId={}", event.getOrderId());
         notificationService.handlePaymentFailed(event, KafkaTopics.PAYMENT_FAILED);
+    }
+
+    @KafkaListener(topics = KafkaTopics.PAYMENT_REFUNDED, groupId = "notification-service")
+    public void onPaymentRefunded(String message) {
+        PaymentRefundedEvent event = objectMapper.readValue(message, PaymentRefundedEvent.class);
+        log.info("Notification nhan payment.refunded orderId={}", event.getOrderId());
+        notificationService.handlePaymentRefunded(event, KafkaTopics.PAYMENT_REFUNDED);
     }
 }

@@ -254,7 +254,7 @@ grep VNPAY_HASH_SECRET .env      # copy giá trị này vào script ipn.ps1 / bi
 2. Chọn **Thẻ nội địa NCB** (thẻ test công khai của VNPay sandbox — đối chiếu lại với tài liệu VNPay đang hiển thị): số thẻ `9704198526191432198`, tên `NGUYEN VAN A`, ngày phát hành `07/15`, OTP `123456`.
 3. Trình duyệt được redirect về `/api/payments/vnpay/return?...vnp_ResponseCode=00`.
 4. `GET /api/payments/order/{orderId}` → `status=SUCCESS` **chỉ khi VNPay gọi được IPN về VPS** (đã khai báo IPN URL ở cổng VNPay và IP của VNPay được chấp nhận, xem 7.0). Nếu vẫn `PENDING`: `docker logs --since 10m payment-billing-service | grep -iE "ipn|vnpay"`. Order (tab ORDER) → `CONFIRMED`.
-5. Thử lại `refund` (7.6) bằng adminToken khi payment đã SUCCESS: sandbox có thể từ chối, ghi nguyên mã trả về.
+5. Thử lại `refund` (7.6) bằng adminToken khi payment đã SUCCESS: sandbox có thể từ chối, ghi nguyên mã trả về. Nếu thành công: sau vài giây `GET /api/orders/{id}` (tab ORDER) phải là **REFUNDED** (hoàn đủ) hoặc **PARTIALLY_REFUNDED**, và `GET /api/notifications/logs?orderId={id}` có loại `PAYMENT_REFUNDED`. Kho không tự đổi (restock thủ công: `PUT /api/inventory/{sku}/restock`).
 
 ### 8. Notification (tab NOTIF, **adminToken**)
 | # | Endpoint | Body | Kỳ vọng | Ghi lại |

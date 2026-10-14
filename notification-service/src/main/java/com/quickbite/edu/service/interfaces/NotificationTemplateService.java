@@ -2,6 +2,7 @@ package com.quickbite.edu.service.interfaces;
 
 import com.quickbite.edu.event.OrderCancelledEvent;
 import com.quickbite.edu.event.OrderCreatedEvent;
+import com.quickbite.edu.event.PaymentRefundedEvent;
 import com.quickbite.edu.event.PaymentResultEvent;
 
 public interface NotificationTemplateService {
@@ -45,4 +46,14 @@ public interface NotificationTemplateService {
     String paymentFailedPushTitle();
 
     String paymentFailedPushBody(PaymentResultEvent event);
+
+    String paymentRefundedEmailSubject(PaymentRefundedEvent event);
+
+    String paymentRefundedEmailBody(PaymentRefundedEvent event);
+
+    String paymentRefundedSms(PaymentRefundedEvent event);
+
+    String paymentRefundedPushTitle();
+
+    String paymentRefundedPushBody(PaymentRefundedEvent event);
 }

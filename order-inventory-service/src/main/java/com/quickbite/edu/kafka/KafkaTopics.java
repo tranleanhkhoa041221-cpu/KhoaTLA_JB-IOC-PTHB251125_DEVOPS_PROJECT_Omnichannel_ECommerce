@@ -17,4 +17,7 @@ public final class KafkaTopics {
 
     /** Order Service LANG NGHE - Payment Service phat khi thanh toan that bai (can compensate). */
     public static final String PAYMENT_FAILED = "payment.failed";
+
+    /** Order Service LANG NGHE - Payment Service phat khi hoan tien thanh cong -> don chuyen PARTIALLY_REFUNDED/REFUNDED. */
+    public static final String PAYMENT_REFUNDED = "payment.refunded";
 }

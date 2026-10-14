@@ -10,6 +10,7 @@ import com.quickbite.edu.entity.enums.NotificationStatus;
 import com.quickbite.edu.entity.enums.NotificationType;
 import com.quickbite.edu.event.OrderCancelledEvent;
 import com.quickbite.edu.event.OrderCreatedEvent;
+import com.quickbite.edu.event.PaymentRefundedEvent;
 import com.quickbite.edu.event.PaymentResultEvent;
 import com.quickbite.edu.exception.NotFoundException;
 import com.quickbite.edu.mapper.NotificationMapper;
@@ -118,6 +119,43 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     public void handlePaymentFailed(PaymentResultEvent event, String kafkaTopic) {
         dispatchPaymentEvent(event, kafkaTopic, NotificationType.PAYMENT_FAILED);
+    }
+
+    @Override
+    public void handlePaymentRefunded(PaymentRefundedEvent event, String kafkaTopic) {
+        Long customerId = event.getCustomerId();
+        UserContactResponse contact;
+        if (customerId != null && customerId > 0) {
+            contact = userContactService.resolveContact(customerId);
+        } else {
+            log.warn("PaymentRefundedEvent thieu customerId cho orderId={}, dung contact fallback", event.getOrderId());
+            customerId = 0L;
+            contact = UserContactResponse.builder()
+                    .email("orders+" + event.getOrderCode() + "@quickbite.local")
+                    .phone("0900000000")
+                    .fullName("Khach hang")
+                    .build();
+        }
+        final Long cid = customerId;
+        final String subject = templateService.paymentRefundedEmailSubject(event);
+        final String emailBody = templateService.paymentRefundedEmailBody(event);
+        final String smsBody = templateService.paymentRefundedSms(event);
+        final String pushTitle = templateService.paymentRefundedPushTitle();
+        final String pushBody = templateService.paymentRefundedPushBody(event);
+        // Moi lan hoan (ke ca hoan 1 phan nhieu lan) co tong da hoan KHAC nhau -> dung lam khoa idempotency,
+        // de event trung (Kafka at-least-once) khong gui 2 lan nhung cac lan hoan khac nhau van duoc bao.
+        String disc = event.getTotalRefundedAmount() != null ? event.getTotalRefundedAmount().toPlainString() : "0";
+        String type = PaymentRefundedEvent.class.getSimpleName();
+
+        dispatch(cid, event.getOrderId(), event.getOrderCode(), NotificationType.PAYMENT_REFUNDED, kafkaTopic, type,
+                NotificationChannel.EMAIL, contact.getEmail(), subject, emailBody,
+                () -> emailSender.send(contact.getEmail(), subject, emailBody), disc);
+        dispatch(cid, event.getOrderId(), event.getOrderCode(), NotificationType.PAYMENT_REFUNDED, kafkaTopic, type,
+                NotificationChannel.SMS, contact.getPhone(), null, smsBody,
+                () -> smsSender.send(contact.getPhone(), smsBody), disc);
+        dispatch(cid, event.getOrderId(), event.getOrderCode(), NotificationType.PAYMENT_REFUNDED, kafkaTopic, type,
+                NotificationChannel.PUSH, "customer:" + cid, pushTitle, pushBody,
+                () -> pushNotificationSender.send(cid, pushTitle, pushBody), disc);
     }
 
     /**
@@ -286,7 +324,26 @@ public class NotificationServiceImpl implements NotificationService {
             String body,
             Runnable sendAction
     ) {
-        String idempotencyKey = notificationType.name() + ":" + orderId + ":" + channel.name();
+        dispatch(customerId, orderId, orderCode, notificationType, kafkaTopic, eventType, channel,
+                recipient, subject, body, sendAction, null);
+    }
+
+    private void dispatch(
+            Long customerId,
+            Long orderId,
+            String orderCode,
+            NotificationType notificationType,
+            String kafkaTopic,
+            String eventType,
+            NotificationChannel channel,
+            String recipient,
+            String subject,
+            String body,
+            Runnable sendAction,
+            String keySuffix
+    ) {
+        String idempotencyKey = notificationType.name() + ":" + orderId + ":" + channel.name()
+                + (keySuffix != null ? ":" + keySuffix : "");
 
         NotificationLog placeholder = NotificationLog.builder()
                 .customerId(customerId != null ? customerId : 0L)

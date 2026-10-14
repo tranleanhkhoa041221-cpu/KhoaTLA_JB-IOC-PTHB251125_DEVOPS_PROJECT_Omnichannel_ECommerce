@@ -10,4 +10,7 @@ public final class KafkaTopics {
     public static final String ORDER_CANCELLED = "order.cancelled";
     public static final String PAYMENT_COMPLETED = "payment.completed";
     public static final String PAYMENT_FAILED = "payment.failed";
+
+    /** Notification LANG NGHE - Payment Service phat khi hoan tien thanh cong -> bao khach. */
+    public static final String PAYMENT_REFUNDED = "payment.refunded";
 }

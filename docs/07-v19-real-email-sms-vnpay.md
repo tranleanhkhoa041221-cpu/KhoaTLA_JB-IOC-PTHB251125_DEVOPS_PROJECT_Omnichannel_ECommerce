@@ -79,6 +79,7 @@ Nếu `docker logs payment-billing-service` có `IP ... không thuộc danh sác
 ### 3.5 Query / Refund
 - **#47** `GET /api/payments/{id}/query` (gọi VNPay `querydr`) → 200 khi cấu hình đúng; payment đã SUCCESS.
 - **Refund** (`POST /api/payments/{id}/refund`, ADMIN): chỉ thử với payment SUCCESS thật. Sandbox đôi khi từ chối refund tuỳ merchant — ghi nguyên mã trả về, không bịa PASS.
+- Sau refund thành công, luồng sự kiện chuẩn `payment.refunded` (Payment → Outbox → Kafka) phải chạy: **Order** đổi `REFUNDED` (hoàn đủ) hoặc `PARTIALLY_REFUNDED` (hoàn 1 phần) — KHÔNG tự cộng kho; **Notification** gửi email/SMS `PAYMENT_REFUNDED` cho khách. Kiểm tra theo cột Verify của R12 (docs/05). Cần deploy bản có V3 (order-inventory) + V2 (notification) Flyway.
 - Request #48 (refund khi payment chưa SUCCESS) vẫn phải trả **400**.
 
 ### 3.6 BLOCKED/SKIP

@@ -34,4 +34,12 @@ public class KafkaTopicConfig {
                 .replicas(REPLICATION_FACTOR)
                 .build();
     }
+
+    @Bean
+    public NewTopic paymentRefundedTopic() {
+        return TopicBuilder.name(KafkaTopics.PAYMENT_REFUNDED)
+                .partitions(PARTITIONS)
+                .replicas(REPLICATION_FACTOR)
+                .build();
+    }
 }

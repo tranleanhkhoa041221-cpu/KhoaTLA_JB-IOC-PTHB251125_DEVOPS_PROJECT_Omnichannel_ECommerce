@@ -14,6 +14,7 @@ import com.quickbite.edu.entity.enums.PaymentStatus;
 import com.quickbite.edu.entity.enums.TransactionLogType;
 import com.quickbite.edu.event.OrderCancelledEvent;
 import com.quickbite.edu.event.OrderCreatedEvent;
+import com.quickbite.edu.event.PaymentRefundedEvent;
 import com.quickbite.edu.event.PaymentResultEvent;
 import com.quickbite.edu.exception.BadRequestException;
 import com.quickbite.edu.exception.ForbiddenException;
@@ -240,10 +241,34 @@ public class PaymentServiceImpl implements PaymentService {
         }
 
         payment.setRefundedAmount(payment.getRefundedAmount().add(request.getAmount()));
-        if (payment.getRefundedAmount().compareTo(payment.getAmount()) >= 0) {
+        boolean fullyRefunded = payment.getRefundedAmount().compareTo(payment.getAmount()) >= 0;
+        if (fullyRefunded) {
             payment.setStatus(PaymentStatus.REFUNDED);
         }
-        paymentRepository.save(payment);
+
+        // Choreography Saga: ghi Payment + OutboxEvent "payment.refunded" trong CUNG 1 transaction.
+        // Order Service nghe de doi trang thai don (PARTIALLY_REFUNDED/REFUNDED), Notification Service
+        // nghe de bao khach. KHONG tu cong lai kho o day (hoan tien != hang da ve kho).
+        PaymentRefundedEvent refundedEvent = PaymentRefundedEvent.builder()
+                .orderId(payment.getOrderId())
+                .customerId(payment.getCustomerId())
+                .orderCode(payment.getOrderCode())
+                .transactionId(payment.getVnpTransactionNo())
+                .refundAmount(request.getAmount())
+                .totalRefundedAmount(payment.getRefundedAmount())
+                .paymentAmount(payment.getAmount())
+                .fullyRefunded(fullyRefunded)
+                .reason(request.getReason())
+                .build();
+        OutboxEvent refundOutbox = OutboxEvent.builder()
+                .aggregateType("PAYMENT")
+                .aggregateId(String.valueOf(payment.getId()))
+                .eventType(PaymentRefundedEvent.class.getSimpleName())
+                .topic(KafkaTopics.PAYMENT_REFUNDED)
+                .payload(objectMapper.writeValueAsString(refundedEvent))
+                .status(OutboxStatus.PENDING)
+                .build();
+        paymentPersistenceOps.updateStatusWithOutbox(payment, refundOutbox);
         log.info("Da hoan tien {} cho paymentId={} (orderCode={})", request.getAmount(), id, payment.getOrderCode());
         return paymentMapper.toResponse(payment);
     }

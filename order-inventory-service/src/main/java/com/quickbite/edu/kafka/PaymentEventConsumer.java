@@ -1,5 +1,6 @@
 package com.quickbite.edu.kafka;
 
+import com.quickbite.edu.event.PaymentRefundedEvent;
 import com.quickbite.edu.event.PaymentResultEvent;
 import com.quickbite.edu.service.interfaces.OrderService;
 import lombok.RequiredArgsConstructor;
@@ -47,5 +48,12 @@ public class PaymentEventConsumer {
         PaymentResultEvent event = objectMapper.readValue(message, PaymentResultEvent.class);
         log.info("Nhan event payment.failed cho orderId={}, ly do={}", event.getOrderId(), event.getReason());
         orderService.cancelOrderFromPaymentFailure(event.getOrderId(), event.getReason());
+    }
+
+    @KafkaListener(topics = KafkaTopics.PAYMENT_REFUNDED, groupId = "order-inventory-service")
+    public void onPaymentRefunded(String message) {
+        PaymentRefundedEvent event = objectMapper.readValue(message, PaymentRefundedEvent.class);
+        log.info("Nhan event payment.refunded cho orderId={}, fullyRefunded={}", event.getOrderId(), event.isFullyRefunded());
+        orderService.applyRefund(event.getOrderId(), event.isFullyRefunded(), event.getTotalRefundedAmount());
     }
 }

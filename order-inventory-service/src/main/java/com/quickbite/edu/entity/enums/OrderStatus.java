@@ -7,11 +7,15 @@ package com.quickbite.edu.entity.enums;
  * SHIPPING    -> dang giao hang
  * COMPLETED   -> da giao thanh cong
  * CANCELLED   -> huy don (thanh toan that bai / khach huy / het ton kho)
+ * PARTIALLY_REFUNDED -> da hoan 1 phan tien (nhan event payment.refunded, fullyRefunded=false)
+ * REFUNDED    -> da hoan TOAN BO tien (nhan event payment.refunded, fullyRefunded=true)
  */
 public enum OrderStatus {
     PENDING,
     CONFIRMED,
     SHIPPING,
     COMPLETED,
-    CANCELLED
+    CANCELLED,
+    PARTIALLY_REFUNDED,
+    REFUNDED
 }

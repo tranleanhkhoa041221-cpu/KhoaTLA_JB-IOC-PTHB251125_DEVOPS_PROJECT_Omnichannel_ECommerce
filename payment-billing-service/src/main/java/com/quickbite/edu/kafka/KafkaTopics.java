@@ -17,4 +17,7 @@ public final class KafkaTopics {
 
     /** Payment Service PHAT ra khi thanh toan that bai (Order Service lang nghe de compensate + huy don). */
     public static final String PAYMENT_FAILED = "payment.failed";
+
+    /** Payment Service PHAT ra (qua Outbox) khi VNPay xac nhan hoan tien thanh cong (1 phan hoac toan bo). */
+    public static final String PAYMENT_REFUNDED = "payment.refunded";
 }

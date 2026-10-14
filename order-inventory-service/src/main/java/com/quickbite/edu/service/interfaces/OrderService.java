@@ -23,4 +23,10 @@ public interface OrderService {
 
     /** Goi khi nhan event payment.failed tu Kafka - compensating transaction: tra lai kho + huy don. */
     void cancelOrderFromPaymentFailure(Long orderId, String reason);
+
+    /**
+     * Goi khi nhan event payment.refunded (Choreography Saga): doi trang thai don sang
+     * PARTIALLY_REFUNDED / REFUNDED. KHONG cong lai kho (hang chua chac da ve kho - restock thu cong).
+     */
+    void applyRefund(Long orderId, boolean fullyRefunded, java.math.BigDecimal totalRefundedAmount);
 }
