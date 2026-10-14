@@ -5,7 +5,7 @@
 # 3) Xem trace: ssh -L 16686:127.0.0.1:16686 root@VPS  -> http://localhost:16686 (chọn service, Find Traces)
 x-otel: &otel
   mem_limit: ${MEM_SVC_TRACING:-480m}
-  volumes: [ "./otel:/otel:ro" ]
+  volumes: [ "./otel:/otel:ro", "./monitoring/otel-config.yaml:/otel-config.yaml:ro" ]
   environment: &otel-env
     JAVA_TOOL_OPTIONS: "-javaagent:/otel/opentelemetry-javaagent.jar"
     OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4317"
@@ -14,10 +14,8 @@ x-otel: &otel
     OTEL_METRICS_EXPORTER: "none"
     OTEL_LOGS_EXPORTER: "none"
     OTEL_TRACES_SAMPLER: "parentbased_traceidratio"
-    OTEL_TRACES_SAMPLER_ARG: "${OTEL_SAMPLE_RATIO:-0.2}"
-    # Loai bo span /actuator/** (health-check & Prometheus scrape moi 15s) khoi Jaeger
-    # de tranh chon vui cac trace business thuc su.
-    OTEL_INSTRUMENTATION_COMMON_EXCLUDED_URLS: "/actuator,/actuator/*"
+    OTEL_TRACES_SAMPLER_ARG: "${OTEL_SAMPLE_RATIO:-1.0}"
+    OTEL_EXPERIMENTAL_CONFIG_FILE: "/otel-config.yaml"
 services:
   api-gateway:             { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: api-gateway } }
   identity-user-service:   { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: identity-user-service } }
@@ -25,3 +23,4 @@ services:
   order-inventory-service: { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: order-inventory-service } }
   payment-billing-service: { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: payment-billing-service } }
   notification-service:    { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: notification-service } }
+  

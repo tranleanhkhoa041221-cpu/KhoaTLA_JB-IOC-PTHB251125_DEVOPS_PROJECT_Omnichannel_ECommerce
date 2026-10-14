@@ -1,0 +1,32 @@
+# OpenTelemetry declarative configuration (Java agent >= 2.21). CHUA KIEM CHUNG TREN VPS.
+# Muc dich: giu trace 100% va DROP span SERVER co url.path bat dau bang /actuator
+# (Prometheus scrape + Docker healthcheck). Nguon cu phap: opentelemetry.io/blog/2025/declarative-config/
+# Khi dung file nay agent doc cau hinh tu day; ${VAR:-default} lay tu env cua container.
+file_format: "1.0-rc.1"
+
+resource:
+  attributes:
+    - name: service.name
+      value: ${OTEL_SERVICE_NAME:-unknown-service}
+
+propagator:
+  composite:
+    - tracecontext:
+    - baggage:
+
+tracer_provider:
+  processors:
+    - batch:
+        exporter:
+          otlp_grpc:
+            endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
+  sampler:
+    rule_based_routing:
+      fallback_sampler:
+        always_on:
+      span_kind: SERVER
+      rules:
+        - action: DROP
+          attribute: url.path
+          pattern: /actuator.*
+          
