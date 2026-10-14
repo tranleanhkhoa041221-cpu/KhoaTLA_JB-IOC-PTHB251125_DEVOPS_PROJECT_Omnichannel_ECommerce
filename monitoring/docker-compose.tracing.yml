@@ -15,6 +15,9 @@ x-otel: &otel
     OTEL_LOGS_EXPORTER: "none"
     OTEL_TRACES_SAMPLER: "parentbased_traceidratio"
     OTEL_TRACES_SAMPLER_ARG: "${OTEL_SAMPLE_RATIO:-0.2}"
+    # Loai bo span /actuator/** (health-check & Prometheus scrape moi 15s) khoi Jaeger
+    # de tranh chon vui cac trace business thuc su.
+    OTEL_INSTRUMENTATION_COMMON_EXCLUDED_URLS: "/actuator,/actuator/*"
 services:
   api-gateway:             { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: api-gateway } }
   identity-user-service:   { <<: *otel, environment: { <<: *otel-env, OTEL_SERVICE_NAME: identity-user-service } }
