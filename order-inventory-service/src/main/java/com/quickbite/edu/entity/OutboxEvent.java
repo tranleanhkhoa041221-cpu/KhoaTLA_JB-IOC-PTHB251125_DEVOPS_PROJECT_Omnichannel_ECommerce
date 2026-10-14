@@ -1,6 +1,7 @@
 package com.quickbite.edu.entity;
 
 import com.quickbite.edu.entity.enums.OutboxStatus;
+import com.quickbite.edu.tracing.OutboxTraceContext;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
@@ -57,4 +58,15 @@ public class OutboxEvent {
 
     @Column(name = "published_at")
     private LocalDateTime publishedAt;
+
+    /** W3C traceparent luc ghi outbox (de noi trace khi publish bang job). Null neu khong co tracing. */
+    @Column(name = "trace_parent", length = 64)
+    private String traceParent;
+
+    @PrePersist
+    void captureTraceParent() {
+        if (traceParent == null) {
+            traceParent = OutboxTraceContext.capture();
+        }
+    }
 }

@@ -41,6 +41,8 @@ dependencies {
 	runtimeOnly 'org.flywaydb:flyway-database-postgresql'
 
     // --- Kafka: nhan OrderCreatedEvent/OrderCancelledEvent, phat PaymentResultEvent (Outbox Pattern)
+    // OpenTelemetry API: chi de noi trace qua Outbox (luu/khoi phuc traceparent). Khong co agent -> no-op.
+    implementation 'io.opentelemetry:opentelemetry-api:1.49.0'
     implementation 'org.springframework.boot:spring-boot-starter-kafka'
 
     // --- Actuator: health-check phuc vu Docker/K8s healthcheck + Prometheus metrics (muc 4.6 cua de bai)

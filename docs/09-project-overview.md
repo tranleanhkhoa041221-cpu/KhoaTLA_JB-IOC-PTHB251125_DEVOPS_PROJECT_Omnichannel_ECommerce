@@ -32,7 +32,7 @@ flowchart TD
     IS & PS & OS & PB & NS --> PG[("PostgreSQL: 5 DB riêng")]
 ```
 
-Thay đổi so với bản trước: topic `payment.refunded` (mới); số partition là **3** (kiểm bằng `kafka-topics.sh --describe`), không phải 1.
+Thay đổi so với bản trước: topic `payment.refunded` (mới, xem mục **6B**); số partition là **3** (kiểm bằng `kafka-topics.sh --describe`), không phải 1.
 
 ---
 
@@ -88,19 +88,58 @@ Dự án dùng VNPay, không có ví nội bộ. Hoàn tiền kiểm tra trong `
 
 **Timeout:** `SagaCompensationJob` (mỗi 5 phút) huỷ đơn `PENDING` > 30 phút, trả kho, phát `order.cancelled`.
 
-**Hoàn tiền (MỚI — luồng chuẩn):**
+### 6B. LUỒNG HOÀN TIỀN (REFUND) MỚI — ghi rõ từng bước
+
+> Đây là luồng **mới** so với bản trước. Trước đây hoàn tiền chỉ đổi dữ liệu trong Payment: đơn vẫn nằm ở `CONFIRMED` dù tiền đã trả lại, và khách không được báo. Nay hoàn tiền là một **Saga choreography** hoàn chỉnh: Payment phát event, Order và Notification cùng nghe.
+
+**Ai gọi, gọi gì:** chỉ **ADMIN** gọi `POST /api/payments/{paymentId}/refund` (chặn ở `SecurityConfig`: `/api/payments/*/refund` → `hasRole(ADMIN)`; customer gọi → `403`).
+Body: `{"amount": <số tiền>, "reason": "<lý do>", "createBy": "admin"}` — `amount` ≥ 0.01 (`@DecimalMin`), `reason` bắt buộc (`@NotBlank`), sai → `400`.
+
+**Điều kiện được hoàn (kiểm trong `PaymentServiceImpl.refund()`):**
+1. Payment phải ở trạng thái `SUCCESS` (chưa thanh toán, `FAILED`, hoặc đã `REFUNDED` hết → `400`).
+2. `amount ≤ amount_gốc − refunded_amount` (hoàn vượt phần còn lại → `400`).
+
+**Các bước (mỗi dòng là 1 service):**
 ```
-Admin: POST /api/payments/{id}/refund  (chỉ ADMIN)
-  → VNPay refund OK (responseCode 00)
-  → Payment: refundedAmount += amount; đủ tiền → status REFUNDED
-  → CÙNG TRANSACTION: ghi Outbox "payment.refunded"
-  → Kafka payment.refunded
-       ├─ Order:        CONFIRMED/SHIPPING/COMPLETED/PARTIALLY_REFUNDED → PARTIALLY_REFUNDED (hoàn 1 phần)
-       │                                                                  → REFUNDED (hoàn đủ)
-       │                (KHÔNG cộng kho)
-       └─ Notification: email + SMS + push "đã hoàn tiền" (PAYMENT_REFUNDED)
+[1] Admin ─ POST /api/payments/{id}/refund ──────────────► Payment & Billing
+[2] Payment ─ gọi VNPay Refund API (ký HMAC-SHA512) ─────► VNPay Sandbox
+        ├─ ghi PaymentTransactionLog type=REFUND (kể cả khi VNPay từ chối)
+        └─ vnp_ResponseCode ≠ "00"  →  trả 502, KHÔNG đổi gì, KHÔNG phát event
+[3] VNPay trả "00":
+        refunded_amount += amount
+        refunded_amount ≥ amount_gốc ?  → Payment.status = REFUNDED
+                                       :  → Payment.status giữ SUCCESS (hoàn 1 phần, còn hoàn tiếp được)
+[4] CÙNG 1 transaction DB: ghi Payment + OutboxEvent "payment.refunded"  (Outbox, như order.created)
+[5] Outbox publisher ─────────────► Kafka topic payment.refunded (3 partition)
+        ├──► Order & Inventory ─ applyRefund():
+        │       đơn đang CONFIRMED / SHIPPING / COMPLETED / PARTIALLY_REFUNDED
+        │         fullyRefunded=false → PARTIALLY_REFUNDED
+        │         fullyRefunded=true  → REFUNDED
+        │       đơn PENDING / CANCELLED → bỏ qua (ghi log WARN, không đổi)
+        │       đã ở đúng trạng thái đích → bỏ qua (event trùng, idempotent)
+        │       KHÔNG cộng kho
+        └──► Notification ─ handlePaymentRefunded():
+                lấy email/SĐT khách qua gRPC Identity, gửi EMAIL + SMS + PUSH
+                loại thông báo PAYMENT_REFUNDED
 ```
-Chính sách: trạng thái đơn luôn phản ánh đúng tiền; khách luôn được báo; kho chỉ cộng khi hàng thật sự về (mục 8).
+
+**Nội dung event `payment.refunded`** (`PaymentRefundedEvent`, cấu trúc giống nhau ở 3 service): `orderId`, `customerId`, `orderCode`, `transactionId`, `refundAmount` (lần này), `totalRefundedAmount` (cộng dồn), `paymentAmount` (gốc), `fullyRefunded` (true/false), `reason`.
+
+**Bảng trạng thái sau khi hoàn (ví dụ đơn 1.000.000 VND đã thanh toán):**
+| Lần hoàn | `refunded_amount` | Payment | Order | Kho | Thông báo |
+|---|---|---|---|---|---|
+| (trước khi hoàn) | 0 | `SUCCESS` | `CONFIRMED` | không đổi | — |
+| Hoàn 400.000 | 400.000 | `SUCCESS` | `PARTIALLY_REFUNDED` | không đổi | 1 bộ EMAIL/SMS/PUSH "hoàn 1 phần" |
+| Hoàn thêm 600.000 | 1.000.000 | `REFUNDED` | `REFUNDED` | không đổi | 1 bộ "hoàn toàn bộ" |
+| Hoàn thêm 1 lần nữa | — | — | — | — | `400` (Payment không còn `SUCCESS`) |
+
+**Chống trùng:** Order bỏ qua event nếu đơn đã ở trạng thái đích. Notification dùng khoá idempotency gồm *tổng đã hoàn*: Kafka giao lặp cùng 1 lần hoàn → không gửi trùng; 2 lần hoàn khác số tiền → được báo 2 lần.
+**Lỗi tạm thời:** Order **không** nuốt lỗi optimistic-lock của `applyRefund` — để Spring Kafka retry, tránh mất event (đơn kẹt `CONFIRMED` dù tiền đã hoàn).
+**Chính sách kho:** hoàn tiền ≠ hàng đã về kho nên **không tự cộng kho**; khi hàng thật sự về, admin gọi `PUT /api/inventory/{sku}/restock`. (Khác với *huỷ đơn* `CONFIRMED` bằng `cancelOrder`: huỷ = hàng chưa giao nên có cộng lại `available`.)
+**Thay đổi DB đi kèm (Flyway):** `order-inventory-service` `V3__add_refund_order_statuses.sql` (mở rộng CHECK trạng thái đơn thêm `PARTIALLY_REFUNDED`, `REFUNDED`); `notification-service` `V2__add_payment_refunded_type.sql` (thêm loại `PAYMENT_REFUNDED`). Payment đã có sẵn cột `refunded_amount` và trạng thái `REFUNDED` từ `V1`. Mỗi version chỉ được có **1 file** — 2 file cùng version làm Flyway báo lỗi và service không khởi động.
+**Hạn chế đã biết (nói thật):** (a) VNPay được gọi *trước* khi commit DB; nếu DB lỗi ngay sau khi VNPay đã hoàn thì tiền đã đi mà hệ thống chưa ghi — cần đối soát bằng `GET /api/payments/{id}/query` và transaction log; (b) chưa có Shipment/Return service nên chưa tự động hoá việc trả hàng → cộng kho; (c) chưa có bằng chứng chạy thật end-to-end — xem D4 và `swagger-test-guide.md` mục 7.11.
+
+---
 
 ## 7. KHO: RESERVE → COMMIT
 | Thời điểm | available | reserved |
@@ -113,12 +152,12 @@ Chính sách: trạng thái đơn luôn phản ánh đúng tiền; khách luôn 
 
 Lưu ý hành vi hiện có: **khách/admin huỷ** đơn `CONFIRMED` (`cancelOrder`) cộng lại `available` (đơn bị huỷ = hàng chưa giao). Hoàn tiền thì không.
 
-## 8. HOÀN TIỀN & ĐỔI TRẢ
-- Hoàn tiền ≠ hàng đã về kho → **không tự cộng kho** khi refund (tránh "hàng ảo").
-- Khi hàng thật sự về: admin `PUT /api/inventory/{sku}/restock` (thủ công).
+## 8. HOÀN TIỀN & ĐỔI TRẢ (chính sách)
+Luồng kỹ thuật đầy đủ: mục **6B**. Tóm tắt chính sách:
+- Hoàn tiền ≠ hàng đã về kho → **không tự cộng kho** khi refund (tránh "hàng ảo"). Khi hàng thật sự về: admin `PUT /api/inventory/{sku}/restock` (thủ công).
 - Chưa có Shipment/Return service; tự động hoá luồng trả hàng là hướng phát triển.
-- Trạng thái đơn: `PENDING → CONFIRMED → (SHIPPING → COMPLETED) → PARTIALLY_REFUNDED → REFUNDED`; `CANCELLED` là nhánh huỷ.
-- Hoàn nhiều lần 1 phần: mỗi lần phát 1 event (khoá idempotency thông báo gồm *tổng đã hoàn*, nên không gửi trùng khi Kafka giao lặp, nhưng mỗi lần hoàn khác nhau đều được báo).
+- Trạng thái đơn: `PENDING → CONFIRMED → (SHIPPING → COMPLETED) → PARTIALLY_REFUNDED → REFUNDED`; `CANCELLED` là nhánh huỷ (đơn `PENDING`/`CONFIRMED` mới huỷ được; đơn đã hoàn tiền thì không huỷ được nữa).
+- Hoàn nhiều lần 1 phần: mỗi lần phát 1 event; Payment giữ `SUCCESS` cho tới khi hoàn đủ rồi mới `REFUNDED`. Khoá idempotency thông báo gồm *tổng đã hoàn* → không gửi trùng khi Kafka giao lặp, nhưng mỗi lần hoàn khác nhau đều được báo.
 
 ## 9. RATE LIMIT
 Tầng 1 Nginx (50 r/s/IP, burst 200 → 503). Tầng 2 Gateway Token Bucket Redis (hết token → 429): login/register `LOGIN_RATE_REPLENISH=5` (burst 10); `/api/users/**` 20/s (burst 40); `/api/catalog/**` 100/s (burst 200); `/api/orders`+`/api/inventory` `ORDER_RATE_REPLENISH=100` (burst `ORDER_RATE_BURST=300`). Hai tầng **bổ sung nhau**: Nginx chặn flood theo IP trước khi vào Spring; Gateway giới hạn theo user/route.
@@ -144,6 +183,7 @@ Tầng 1 Nginx (50 r/s/IP, burst 200 → 503). Tầng 2 Gateway Token Bucket Red
 Quy ước: **[PC]** máy cá nhân · **[VPS]** SSH vào VPS · **[UI]** thao tác trên giao diện. Số `#n` là số thứ tự request trong Postman collection hiện có (`docs/05`), không tạo request mới.
 
 ## D0. Chuẩn bị trước giờ demo (làm 1 lần, ~15 phút)
+> Bật Prometheus/Loki/Jaeger và kiểm tra từng nguồn trong Grafana: làm **D4B** trước khi demo D5/D6.
 
 1. **[VPS]** Stack khoẻ: `cd /opt/quickbite && docker compose ps` → tất cả `healthy`; `bash infra/scripts/verify-stack.sh`.
 2. **[VPS]** Để demo tracing chắc chắn có trace: mặc định chỉ lấy mẫu 20%. Tạm tăng: `echo OTEL_SAMPLE_RATIO=1 >> .env && docker compose up -d` (tốn thêm RAM; demo xong xoá dòng này rồi `up -d`).
@@ -193,13 +233,114 @@ Thử **đặt quá tồn**: dùng **#35** khởi tạo SKU tồn 1 rồi đặt
    > "Notification chết không làm hỏng đặt hàng; sự kiện nằm chờ trên Kafka."
 5. Gửi thử thủ công: `POST /api/notifications/test` (body: `channel`, `recipient`, `subject`, `body`).
 
-## D4. HOÀN TIỀN (luồng chuẩn mới)
-1. **[PC]** Postman (ADMIN): `POST /api/payments/{{paymentId}}/refund` body `{"amount": <số tiền>, "reason": "Khach tra hang", "createBy": "admin"}` (payment phải `SUCCESS`; sandbox có thể từ chối — ghi nguyên mã trả về).
-2. **[VPS]** `select topic,status from outbox_events where topic='payment.refunded' order by id desc limit 1` (payment_billing_db) → `PUBLISHED`.
-3. Vài giây sau: đơn → `REFUNDED` (hoàn đủ) / `PARTIALLY_REFUNDED`; `GET /api/notifications/logs?orderId=...` có `PAYMENT_REFUNDED`; kho **không đổi**.
-> "Trạng thái đơn luôn đúng với tiền, khách luôn được báo, kho tách riêng theo chính sách trả hàng."
+## D4. HOÀN TIỀN (luồng mới: Payment → Outbox → Kafka → Order + Notification)
 
-## D5. GRAFANA (metrics + logs)
+Điều kiện: có 1 đơn đã thanh toán thật ở D2 (Payment `SUCCESS`, Order `CONFIRMED`). Sơ đồ & luật: mục **6B**. Ghi lại `paymentId`, `orderId`, `amount` (Postman `GET /api/payments/order/{{orderId}}`).
+
+1. **[PC]** Postman **#48** (hoặc Swagger tab PAYMENT) `POST /api/payments/{{paymentId}}/refund`, token **ADMIN**. Hoàn **1 phần** trước, ví dụ `amount` bằng khoảng 40% `amount`:
+   `{"amount": <40% amount>, "reason": "Khach tra hang 1 phan", "createBy": "admin"}` → `200`, `data.refundedAmount` = số vừa hoàn, `data.status` vẫn `SUCCESS`.
+   Sandbox từ chối → `502` + mã VNPay; khi đó **không có** event và đơn không đổi — ghi nguyên mã trả về, đừng gọi là PASS.
+2. **[VPS]** Outbox của Payment đã đẩy sang Kafka:
+   `docker exec postgres psql -U payment_billing -d payment_billing_db -c "select id,topic,status from outbox_events where topic='payment.refunded' order by id desc limit 1"` → `PUBLISHED`.
+3. **[VPS]** Order đổi trạng thái (vài giây):
+   `docker exec postgres psql -U order_inventory -d order_inventory_db -c "select order_code,status from orders where id=<orderId>"` → `PARTIALLY_REFUNDED`.
+   Kho **không đổi**: `select sku,available_qty,reserved_qty from inventories where sku='<sku>'` giống trước khi hoàn.
+4. **[PC]** Postman (ADMIN) `GET /api/notifications/logs?orderId={{orderId}}` → có `PAYMENT_REFUNDED` × `EMAIL/SMS/PUSH`, `status: SENT` (hoặc kiểm tra email/SMS thật nếu đã bật ở D3).
+5. Hoàn **phần còn lại** (`amount − refundedAmount`) → `data.status` = `REFUNDED`; sau vài giây Order = `REFUNDED`; có thêm 1 bộ thông báo "hoàn toàn bộ".
+6. Chứng minh các chốt chặn: hoàn thêm lần nữa → `400`; gọi bằng token CUSTOMER → `403`; `amount: 0` hoặc thiếu `reason` → `400`.
+7. **[VPS]** Log: `docker logs --since 10m payment-billing-service | grep -i refund`; `docker logs --since 10m order-inventory-service | grep -i "payment.refunded"`; `docker logs --since 10m notification-service | grep -i "payment.refunded"`.
+8. **[UI]** Jaeger (kỳ vọng, chưa kiểm chứng): trace `POST /api/payments/{id}/refund` có span gọi ra VNPay + JDBC (update payment + insert outbox) **và, sau ~1–2 giây, span Kafka producer `payment.refunded` rồi consumer ở `order-inventory-service` + `notification-service` trong CÙNG trace** (nhờ cột `outbox_events.trace_parent`, migration `V3__outbox_trace_parent.sql` ở payment, `V4__outbox_trace_parent.sql` ở order-inventory; job Outbox đặt lại traceparent làm parent khi publish). Khi demo đặt `OTEL_SAMPLE_RATIO=1.0`. Event cũ (trước migration) có `trace_parent` NULL nên vẫn đứt trace — bình thường.
+> Cách nói: "Hoàn tiền không chỉ trả tiền: Payment phát một sự kiện, Order tự cập nhật trạng thái đơn, Notification tự báo khách — cả ba không gọi trực tiếp nhau. Kho tách riêng vì tiền về chưa chắc hàng đã về."
+*Trạng thái: chưa chạy thật end-to-end; sandbox VNPay có thể từ chối refund. Nếu bị chặn, chạy kịch bản mô phỏng event ở `swagger-test-guide.md` mục 7.11-C để kiểm Order + Notification riêng.*
+
+## D4B. BẬT & TEST CẢ 3 NGUỒN TRONG GRAFANA (Prometheus + Loki + Jaeger)
+
+Grafana chỉ là "màn hình": nó **không tự sinh dữ liệu**. Màn hình Explore báo *No data* nghĩa là nguồn bên dưới chưa chạy, chưa có traffic, hoặc bạn chưa chọn đúng truy vấn. Làm lần lượt 5 bước dưới đây.
+
+### Bước 1 — Bật đủ stack [VPS]
+Loki, Promtail, Jaeger nằm trong profile `full`; tracing cần file compose thứ 3 + agent. Kiểm tra:
+```bash
+cd /opt/quickbite
+grep -E '^(COMPOSE_FILE|COMPOSE_PROFILES|OTEL_SAMPLE_RATIO)=' .env
+docker compose ps --format 'table {{.Name}}\t{{.Status}}' | grep -E 'prometheus|grafana|loki|promtail|jaeger'
+```
+Phải thấy `COMPOSE_FILE=` có **3 file** (`docker-compose.production.yml`, `monitoring/docker-compose.monitoring.yml`, `monitoring/docker-compose.tracing.yml`), `COMPOSE_PROFILES=full`, và 5 container monitoring đều `Up`. Thiếu thì đặt lại và bật (thứ tự bật theo `docs/08` A4 → A5; RAM phải ổn ở bậc 1 trước khi bật tracing):
+```bash
+sed -i '/^COMPOSE_FILE=/d;/^COMPOSE_PROFILES=/d' .env
+echo 'COMPOSE_FILE=docker-compose.production.yml:monitoring/docker-compose.monitoring.yml:monitoring/docker-compose.tracing.yml' >> .env
+echo 'COMPOSE_PROFILES=full' >> .env
+bash infra/scripts/get-otel-agent.sh && ls -la otel/opentelemetry-javaagent.jar
+docker compose up -d --remove-orphans          # 6 service restart tuần tự, chờ 10–20 phút
+docker compose ps; free -m
+```
+
+### Bước 2 — Kiểm tra agent tracing đã gắn vào JVM [VPS]
+```bash
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' order-inventory-service | grep -E 'JAVA_TOOL_OPTIONS|OTEL_SERVICE_NAME|OTEL_EXPORTER_OTLP_ENDPOINT'
+docker logs order-inventory-service 2>&1 | grep -i -m2 opentelemetry
+```
+Phải thấy `-javaagent:/otel/opentelemetry-javaagent.jar`, `OTEL_SERVICE_NAME=order-inventory-service`, endpoint `http://jaeger:4317` và dòng log của agent. Không thấy ⇒ tracing **chưa bật** (quay lại bước 1).
+
+### Bước 3 — Sinh dữ liệu thật [PC]
+Chạy Postman **#2 → #4 → #5 → #11 → #15 → #20 → #28 → #35**, rồi **#39 (tạo đơn) 5–10 lần** (mỗi lần `idempotencyKey` mới), thêm **#44** + thanh toán 1 đơn (D2). Không có traffic thì Prometheus/Loki/Jaeger đều trống. Sau đó **[VPS]** kiểm tra Jaeger đã nhận trace:
+```bash
+curl -s http://127.0.0.1:16686/api/services          # phải liệt kê api-gateway, order-inventory-service, ...
+```
+Danh sách rỗng hoặc chỉ có `jaeger-all-in-one` ⇒ chưa có trace (kiểm tra lại bước 2, sample ratio: `OTEL_SAMPLE_RATIO=1` ở D0).
+
+### Bước 4 — Kiểm tra 3 data source [UI]
+Grafana → **Connections → Data sources** → bấm lần lượt **Prometheus**, **Loki**, **Jaeger** → cuối trang **Save & test** → phải báo xanh (thành công). Cả 3 do file provisioning tạo sẵn (Prometheus là mặc định). Đỏ ⇒ container tương ứng chưa chạy (xem bước 1).
+
+### Bước 5 — Test từng nguồn trong **Explore**
+Đặt time range **Last 15 minutes** (góc phải trên). Chọn data source ở ô trên cùng bên trái (đúng màn hình bạn đang mở: *Jaeger / Loki / Prometheus*). Bấm nút xanh **Run query** (hoặc Shift+Enter).
+
+**5A. Prometheus** — chọn *Prometheus*, đổi chế độ từ *Builder* sang **Code**, dán từng câu:
+
+| # | Câu PromQL | Kết quả đúng | Ý nghĩa khi demo |
+|---|---|---|---|
+| 1 | `up{job="services"}` | 6 dòng, giá trị 1 | 6 service đều được scrape |
+| 2 | `sum by (instance) (rate(http_server_requests_seconds_count[2m]))` | req/s từng service (tăng khi bạn tạo đơn) | Tải theo service |
+| 3 | `sum by (instance) (rate(spring_cloud_gateway_requests_seconds_count[2m]))` | req/s của `api-gateway` | Tải ở cổng vào |
+| 4 | `sum(rate(http_server_requests_seconds_count{instance="order-inventory-service:8084",method="POST",uri="/api/orders"}[2m]))` | >0 khi đang tạo đơn | Tốc độ tạo đơn |
+| 5 | `sum by (instance) (rate(http_server_requests_seconds_count{status=~"5.."}[2m]))` | 0 (hoặc không có dòng) | Lỗi 5xx |
+| 6 | `sum by (instance, status) (rate(http_server_requests_seconds_count{status=~"4.."}[2m]))` | 400/401/409/429 khi có test lỗi | Lỗi phía client, rate limit |
+| 7 | `sum by (instance) (rate(http_server_requests_seconds_sum[2m])) / sum by (instance) (rate(http_server_requests_seconds_count[2m]))` | giây/request trung bình | Độ trễ trung bình |
+| 8 | `max by (instance) (http_server_requests_seconds_max)` | độ trễ lớn nhất gần đây | Đỉnh độ trễ |
+| 9 | `sum by (instance) (jvm_memory_used_bytes{area="heap"})` và `sum by (instance) (jvm_memory_max_bytes{area="heap"})` | used < max | Heap JVM |
+| 10 | `sum by (instance) (rate(jvm_gc_pause_seconds_sum[2m]))` | gần 0 | Thời gian GC |
+| 11 | `jvm_threads_live_threads` | vài chục luồng/service | Luồng JVM |
+| 12 | `process_cpu_usage * 100` và `system_cpu_usage * 100` | % CPU | Nút cổ chai CPU |
+| 13 | `hikaricp_connections_active`, `hikaricp_connections_pending`, `hikaricp_connections_max` | active < max, pending ≈ 0 | Pool DB |
+| 14 | `max by (instance) (kafka_consumer_fetch_manager_records_lag_max)` | về 0 sau đợt tải | Consumer lag |
+| 15 | `process_uptime_seconds` | nhỏ bất thường = vừa restart | Phát hiện restart |
+
+Ghi chú trung thực: (a) **không có p95/p99** trong Prometheus vì source chưa bật histogram — p95/p99 lấy từ **k6** (D7); (b) **không có** metric RAM/OOM theo container (không có cAdvisor) — dùng `docker stats` / `docker inspect ... OOMKilled` trên VPS; (c) Prometheus scrape mỗi 30 giây nên dùng cửa sổ `[2m]`; (d) câu nào *No data*: vào **Metric browser**/gõ tên metric để xem nhãn thật (`uri`, `instance`) rồi chỉnh câu truy vấn.
+
+**5B. Loki** — chọn *Loki*, chế độ **Code**:
+
+| # | Câu LogQL | Thấy gì |
+|---|---|---|
+| 1 | `{container="order-inventory-service"}` | Log của Order (Label browser liệt kê đủ giá trị `container`) |
+| 2 | `{container="order-inventory-service"} \|= "payment.completed"` | Order nhận kết quả thanh toán |
+| 3 | `{container="order-inventory-service"} \|= "payment.refunded"` | Order nhận sự kiện hoàn tiền |
+| 4 | `{container="payment-billing-service"} \|= "IPN"` | Payment xử lý IPN VNPay |
+| 5 | `{container="notification-service"} \|= "payment.completed"` | Notification nhận sự kiện |
+| 6 | `{container=~"api-gateway\|.*-service"} \|~ "(?i)error\|exception"` | Mọi lỗi của 6 service |
+| 7 | `sum by (container) (count_over_time({container=~"api-gateway\|.*-service"} \|~ "(?i)error" [5m]))` | Số dòng lỗi theo service (dạng biểu đồ) |
+
+**5C. Jaeger** (màn hình bạn đang mở) — chọn data source *Jaeger*:
+1. Ở hàng tab của query, chọn **Search** (có 3 chế độ: *Search*, *TraceID*, *Dependency graph*; ảnh bạn chụp đang bị menu che tab Search).
+2. **Service** → chọn `api-gateway` (hoặc `order-inventory-service`). Danh sách trống ⇒ chưa có trace (làm lại bước 2–3).
+3. **Operation** để *All*; **Limit** 20; có thể đặt **Min duration** (ví dụ `100ms`) để tìm request chậm.
+4. Bấm **Run query** → hiện danh sách trace → bấm 1 trace → **waterfall** các span (gateway → order → gRPC identity/product → JDBC → …). Bấm vào 1 span để xem *Tags* (`rpc.system`, `db.system`, `messaging.system`…, tuỳ agent bắt được).
+5. Tab **TraceID**: dán Trace ID (copy từ danh sách trace) rồi Shift+Enter.
+6. Tab **Dependency graph**: sơ đồ service gọi service. Nếu trống dù đã có trace, ghi nhận "chưa hiển thị" và dùng giao diện Jaeger gốc `http://localhost:16686` (tab *System Architecture*).
+
+**5D. Xem 3 nguồn cạnh nhau (rất hợp để demo):** bấm **Split** (góc trên) → bên trái chọn *Prometheus* (câu #2), bên phải chọn *Loki* (câu #2) hoặc *Jaeger*; hai bên dùng chung khoảng thời gian. Nói: "Metrics báo *có chuyện*, log cho biết *chuyện gì*, trace chỉ ra *chậm/lỗi ở đâu*."
+
+**Chốt PASS cho Monitoring (chỉ khi có bằng chứng):** 5A#1 ra 6 dòng bằng 1 · 5B#1 ra log · 5C ra ≥1 trace có waterfall nhiều service · chụp 3 ảnh làm bằng chứng. Thiếu cái nào ghi PARTIAL.
+
+## D5. DASHBOARD GRAFANA (QuickBite — Overview)
 
 **[UI]** `http://localhost:3000` → Dashboards → **QuickBite — Overview**. Có 7 panel (đúng như source):
 
@@ -219,7 +360,7 @@ Thao tác: đặt time range **Last 15 minutes**, auto-refresh **10s** → chạ
 - `{container="payment-billing-service"} |= "IPN"`;
 - `{container="notification-service"} |= "payment.refunded"`.
 Nhãn `container` là tên container (xem danh sách: Explore → Label browser → `container`). Trước khi demo hãy kiểm tra các nhãn này có thật trên máy bạn.
-**Prometheus:** không public. Kiểm tra scrape: **[VPS]** `docker exec prometheus wget -qO- http://localhost:9090/api/v1/targets | grep -o '"health":"[a-z]*"' | sort | uniq -c` → 7 `up`.
+**Prometheus:** không public; kiểm tra bằng Explore (D4B bước 5A). Kiểm tra scrape từ VPS: **[VPS]** `docker exec prometheus wget -qO- http://localhost:9090/api/v1/targets | grep -o '"health":"[a-z]*"' | sort | uniq -c` → 7 `up`.
 > Cách nói: "Metrics trả lời *hệ thống có khoẻ không*, log trả lời *chuyện gì đã xảy ra*, trace trả lời *chậm ở đâu*."
 
 ## D6. TRACING (Jaeger + OpenTelemetry) — xem TẤT CẢ loại span
@@ -275,7 +416,7 @@ Quy tắc đạt: `orders_created` = `STOCK − available_qty`; `available_qty �
 **Kết luận (2 dòng riêng, theo số đo thật):** *PASS FUNCTIONAL* khi không oversell + số đơn khớp + Outbox/Kafka đuổi kịp + không OOM. *Load theo đề 500–1000 req/s:* ghi KHÔNG TEST/FAIL nếu không đạt; báo cáo "ổn định tới N req/s, p95 = X ms" bằng số đo thật. Bảng điền kết quả: `docs/08` mục B5.
 
 ## D8. KỊCH BẢN 10 PHÚT (tóm tắt)
-1. (1′) Nói theo sơ đồ. 2. (2′) D1 đặt hàng + idempotency + Outbox/Kafka. 3. (2′) D2 thanh toán VNPay thẻ test → đơn CONFIRMED. 4. (1′) D3 nhận email/SMS thật + tắt/bật Notification. 5. (1′) D4 hoàn tiền → REFUNDED. 6. (1.5′) D5 Grafana + Loki. 7. (1.5′) D6 Jaeger waterfall. 8. (1′) D7 mở kết quả k6 đã chạy sẵn (đừng chạy live nếu VPS yếu) và nêu kết luận trung thực.
+1. (1′) Nói theo sơ đồ. 2. (2′) D1 đặt hàng + idempotency + Outbox/Kafka. 3. (2′) D2 thanh toán VNPay thẻ test → đơn CONFIRMED. 4. (1′) D3 nhận email/SMS thật + tắt/bật Notification. 5. (1′) D4 hoàn tiền → PARTIALLY_REFUNDED → REFUNDED (mục 6B). 6. (1.5′) D4B/D5 Grafana: Prometheus + Loki + dashboard. 7. (1.5′) D6 Jaeger waterfall. 8. (1′) D7 mở kết quả k6 đã chạy sẵn (đừng chạy live nếu VPS yếu) và nêu kết luận trung thực.
 
 ---
-*Cập nhật: 2026-10-14. Chưa có bằng chứng chạy thật cho: refund → REFUNDED end-to-end, monitoring/tracing, load test (chờ log từ VPS).*
+*Cập nhật: 2026-10-14. Gồm luồng hoàn tiền mới (6B, 8, D4) và test đầy đủ Grafana/Prometheus/Loki (D4B, D5), tracing Jaeger (D6), k6 (D7). Chưa có bằng chứng chạy thật cho: refund → REFUNDED end-to-end, monitoring/tracing, load test (chờ log từ VPS).*

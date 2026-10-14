@@ -3,6 +3,8 @@ package com.quickbite.edu.kafka;
 import com.quickbite.edu.entity.OutboxEvent;
 import com.quickbite.edu.entity.enums.OutboxStatus;
 import com.quickbite.edu.repository.OutboxEventRepository;
+import com.quickbite.edu.tracing.OutboxTraceContext;
+import io.opentelemetry.context.Scope;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -58,8 +60,11 @@ public class OutboxDispatchOps {
         }
 
         try {
-            kafkaTemplate.send(event.getTopic(), event.getAggregateId(), event.getPayload())
-                    .get(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            // Dat lai trace cua request goc lam parent -> span Kafka producer/consumer cung trace voi request.
+            try (Scope ignored = OutboxTraceContext.restore(event.getTraceParent())) {
+                kafkaTemplate.send(event.getTopic(), event.getAggregateId(), event.getPayload())
+                        .get(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            }
             event.setStatus(OutboxStatus.PUBLISHED);
             event.setPublishedAt(LocalDateTime.now());
             outboxEventRepository.save(event);
