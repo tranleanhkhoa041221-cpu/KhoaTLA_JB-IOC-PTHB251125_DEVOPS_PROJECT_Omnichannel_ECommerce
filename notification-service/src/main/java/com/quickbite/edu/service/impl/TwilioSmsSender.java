@@ -52,6 +52,8 @@ public class TwilioSmsSender implements SmsSender {
     private static final Pattern MSG_ERROR_CODE = Pattern.compile("\"error_code\"\\s*:\\s*(\\d+)");
     /** Ma loi Twilio: freeform ngoai cua so 24h. */
     private static final String OUTSIDE_WINDOW = "63016";
+    /** Ma loi Twilio: sender WhatsApp khong cho gui Body tu do, bat buoc dung template ("ContentSid Required"). */
+    private static final String CONTENT_SID_REQUIRED = "21654";
     private static final int STATUS_POLL_TRIES = 4;
     private static final long STATUS_POLL_MS = 1000L;
 
@@ -114,8 +116,8 @@ public class TwilioSmsSender implements SmsSender {
         String body = response.body() == null ? "" : response.body();
         if (response.statusCode() / 100 != 2) {
             String code = first(ERROR_CODE, body);
-            if (OUTSIDE_WINDOW.equals(code)) {
-                log.warn("[WHATSAPP-TWILIO] Ngoai cua so 24h (63016) - gui TEMPLATE co dinh thay the (khong co noi dung don hang).");
+            if (OUTSIDE_WINDOW.equals(code) || CONTENT_SID_REQUIRED.equals(code)) {
+                log.warn("[WHATSAPP-TWILIO] Twilio tu choi Body tu do (ma {}: ngoai cua so 24h hoac sender chi cho template) - gui bang TEMPLATE (ContentSid) thay the.", code);
                 sendWhatsAppTemplate(to, from, message);
                 return;
             }
@@ -133,7 +135,7 @@ public class TwilioSmsSender implements SmsSender {
             status = first(STATUS, current);
             if ("failed".equals(status) || "undelivered".equals(status)) {
                 String code = first(MSG_ERROR_CODE, current);
-                if (OUTSIDE_WINDOW.equals(code)) {
+                if (OUTSIDE_WINDOW.equals(code) || CONTENT_SID_REQUIRED.equals(code)) {
                     log.warn("[WHATSAPP-TWILIO] sid={} bi tu choi 63016 (ngoai cua so 24h) - gui TEMPLATE co dinh thay the.", sid);
                     sendWhatsAppTemplate(to, from, message);
                     return;
