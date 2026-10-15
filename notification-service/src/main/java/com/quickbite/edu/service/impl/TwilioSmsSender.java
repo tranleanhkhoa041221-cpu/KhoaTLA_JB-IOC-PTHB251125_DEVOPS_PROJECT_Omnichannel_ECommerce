@@ -49,6 +49,11 @@ public class TwilioSmsSender implements SmsSender {
     private static final Pattern STATUS = Pattern.compile("\"status\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern ERROR_CODE = Pattern.compile("\"code\"\\s*:\\s*(\\d+)");
     private static final Pattern ERROR_MESSAGE = Pattern.compile("\"message\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern MSG_ERROR_CODE = Pattern.compile("\"error_code\"\\s*:\\s*(\\d+)");
+    /** Ma loi Twilio: freeform ngoai cua so 24h. */
+    private static final String OUTSIDE_WINDOW = "63016";
+    private static final int STATUS_POLL_TRIES = 4;
+    private static final long STATUS_POLL_MS = 1000L;
 
     private final NotificationProperties properties;
     private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
@@ -82,7 +87,7 @@ public class TwilioSmsSender implements SmsSender {
                     to = "whatsapp:" + to;
                     from = "whatsapp:" + from;
                     if (!isBlank(properties.getTwilioWhatsappContentSid())) {
-                        sendWhatsAppTemplate(to, from, message);
+                        sendWhatsAppFreeformThenTemplate(to, from, message);
                         return;
                     }
                 }
@@ -96,6 +101,77 @@ public class TwilioSmsSender implements SmsSender {
             }
         }
         log.info("[SMS-DEV] phone={} | message={}", phoneNumber, message);
+    }
+
+    /**
+     * Uu tien gui NOI DUNG THAT (Body tu do). Chi khi Twilio bao ngoai cua so 24h (63016) moi gui TEMPLATE co dinh.
+     * 63016 co the tra ve ngay (HTTP 400) hoac chi hien sau khi message da "queued" -> sau khi gui, doi toi da ~4s
+     * va kiem tra lai trang thai; neu failed/undelivered voi 63016 thi gui template.
+     */
+    private void sendWhatsAppFreeformThenTemplate(String to, String from, String message) throws Exception {
+        String form = "To=" + enc(to) + "&From=" + enc(from) + "&Body=" + enc(message);
+        HttpResponse<String> response = postMessage(form);
+        String body = response.body() == null ? "" : response.body();
+        if (response.statusCode() / 100 != 2) {
+            String code = first(ERROR_CODE, body);
+            if (OUTSIDE_WINDOW.equals(code)) {
+                log.warn("[WHATSAPP-TWILIO] Ngoai cua so 24h (63016) - gui TEMPLATE co dinh thay the (khong co noi dung don hang).");
+                sendWhatsAppTemplate(to, from, message);
+                return;
+            }
+            throw new IllegalStateException("Twilio HTTP " + response.statusCode() + " (ma loi " + code + "): "
+                    + first(ERROR_MESSAGE, body));
+        }
+        String sid = first(SID, body);
+        String status = first(STATUS, body);
+        for (int i = 0; i < STATUS_POLL_TRIES && !"?".equals(sid); i++) {
+            if (isFinalStatus(status)) {
+                break;
+            }
+            Thread.sleep(STATUS_POLL_MS);
+            String current = fetchMessage(sid);
+            status = first(STATUS, current);
+            if ("failed".equals(status) || "undelivered".equals(status)) {
+                String code = first(MSG_ERROR_CODE, current);
+                if (OUTSIDE_WINDOW.equals(code)) {
+                    log.warn("[WHATSAPP-TWILIO] sid={} bi tu choi 63016 (ngoai cua so 24h) - gui TEMPLATE co dinh thay the.", sid);
+                    sendWhatsAppTemplate(to, from, message);
+                    return;
+                }
+                throw new IllegalStateException("Twilio WhatsApp " + status + " (ma loi " + code + ") sid=" + sid);
+            }
+        }
+        log.info("[WHATSAPP-TWILIO] Da gui noi dung thong bao toi {} | sid={} | status={}", to, sid, status);
+    }
+
+    private static boolean isFinalStatus(String status) {
+        return "sent".equals(status) || "delivered".equals(status) || "read".equals(status);
+    }
+
+    private HttpResponse<String> postMessage(String form) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(String.format(MESSAGES_URL, properties.getTwilioAccountSid())))
+                .timeout(Duration.ofSeconds(15))
+                .header("Authorization", "Basic " + basicAuth())
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(form))
+                .build();
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    private String fetchMessage(String sid) throws Exception {
+        String url = String.format("https://api.twilio.com/2010-04-01/Accounts/%s/Messages/%s.json",
+                properties.getTwilioAccountSid(), sid);
+        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(10))
+                .header("Authorization", "Basic " + basicAuth())
+                .GET().build();
+        HttpResponse<String> r = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        return r.body() == null ? "" : r.body();
+    }
+
+    private String basicAuth() {
+        return Base64.getEncoder().encodeToString(
+                (properties.getTwilioAccountSid() + ":" + properties.getTwilioAuthToken()).getBytes(StandardCharsets.UTF_8));
     }
 
     /** Gui WhatsApp template (ContentSid + ContentVariables) bang REST API cua Twilio. */
@@ -173,7 +249,7 @@ public class TwilioSmsSender implements SmsSender {
         if (!isWhatsApp()) {
             return "SMS";
         }
-        return isBlank(properties.getTwilioWhatsappContentSid()) ? "WHATSAPP (Body tu do)" : "WHATSAPP (template)";
+        return isBlank(properties.getTwilioWhatsappContentSid()) ? "WHATSAPP (Body tu do)" : "WHATSAPP (noi dung that, fallback template khi qua 24h)";
     }
 
     /**
