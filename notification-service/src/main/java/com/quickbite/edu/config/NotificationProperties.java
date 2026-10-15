@@ -29,5 +29,25 @@ public class NotificationProperties {
      */
     private String twilioFromNumber;
 
+    /**
+     * Kenh Twilio dung cho thong bao "dien thoai": "sms" (mac dinh) hoac "whatsapp".
+     * Log trong notification_logs van ghi kenh SMS (chi doi nha cung cap gui).
+     */
+    private String twilioChannel = "sms";
+
+    /**
+     * Content SID (HX...) cua WhatsApp template. Co gia tri = gui bang TEMPLATE (ContentSid + ContentVariables):
+     * BAT BUOC voi sender WhatsApp khong cho gui Body tu do (Twilio tra loi 21654 "ContentSid Required")
+     * va voi moi tin ngoai cua so 24h. De trong = gui Body tu do (chi dung duoc voi sender cho phep).
+     */
+    private String twilioWhatsappContentSid;
+
+    /**
+     * Mau ContentVariables (JSON). Chuoi {{message}} duoc thay bang noi dung thong bao (da lam sach, escape JSON).
+     * De trong = {"1":"{{message}}"} (template co DUNG 1 bien {{1}}). Vi du template mau 2 bien:
+     * {"1":"{{message}}","2":"QuickBite"}.
+     */
+    private String twilioWhatsappContentVariables;
+
     private String fallbackEmailDomain = "quickbite.local";
 }

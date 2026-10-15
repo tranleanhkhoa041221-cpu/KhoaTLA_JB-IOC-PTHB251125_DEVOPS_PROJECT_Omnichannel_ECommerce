@@ -90,6 +90,12 @@ notification:
   twilio-account-sid: ${TWILIO_ACCOUNT_SID:}
   twilio-auth-token: ${TWILIO_AUTH_TOKEN:}
   twilio-from-number: ${TWILIO_FROM_NUMBER:}
+  # sms | whatsapp (whatsapp: to/from them tien to "whatsapp:")
+  twilio-channel: ${TWILIO_CHANNEL:sms}
+  # WhatsApp template (HX...). Co gia tri = gui bang template (bat buoc voi sender chi cho phep template).
+  twilio-whatsapp-content-sid: ${TWILIO_WHATSAPP_CONTENT_SID:}
+  # De trong = {"1":"{{message}}"}; xem NotificationProperties.
+  twilio-whatsapp-content-variables: ${TWILIO_WHATSAPP_CONTENT_VARIABLES:}
 
 springdoc:
   swagger-ui:
