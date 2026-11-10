@@ -71,7 +71,7 @@ A production-ready, omnichannel e-commerce backend system built on a microservic
 | **product-catalog-service** | 8083 | 9091 | `product_catalog_db` | Brands, categories, products, SKU variants, stock, slugs, search. |
 | **order-inventory-service** | 8084 | — | `order_inventory_db` + Redis | Order state machine, idempotency, inventory management, Outbox→Kafka. |
 | **payment-billing-service** | 8085 | — | `payment_billing_db` | VNPay integration, payment lifecycle, Saga compensation via Kafka. |
-| **notification-service** | 8086 | — | `notification_db` | Email (Gmail) + SMS (Twilio) + Push. Idempotent event consumption. |
+| **notification-service** | 8086 | — | `notification_db` | Email (Gmail) + WhatsApp/SMS (Twilio — channel configurable via `twilio-channel`) + Push. Idempotent event consumption. |
 
 ---
 
@@ -98,7 +98,7 @@ A production-ready, omnichannel e-commerce backend system built on a microservic
 | **Load Testing** | k6 |
 | **API Docs** | SpringDoc OpenAPI / Swagger UI 3.1.0 |
 | **Payment Gateway** | VNPay (HMAC-SHA512) |
-| **Notifications** | Spring Mail (Gmail SMTP) + Twilio SDK 10.1.5 (SMS/WhatsApp) |
+| **Notifications** | Spring Mail (Gmail SMTP) + Twilio SDK 10.1.5 (WhatsApp Template / WhatsApp free-form / SMS — configurable) |
 
 ---
 
